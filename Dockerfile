@@ -16,9 +16,9 @@ WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         curl ca-certificates nodejs npm \
-        fonts-nanum && \
-    rm -rf /var/lib/apt/lists/* && \
-    fc-cache -f
+        fonts-nanum fontconfig && \
+    fc-cache -f && \
+    rm -rf /var/lib/apt/lists/*
 
 COPY --from=claude-cli /usr/local/lib/node_modules /usr/local/lib/node_modules
 RUN ln -s /usr/local/lib/node_modules/@anthropic-ai/claude-code/cli.js /usr/local/bin/claude
