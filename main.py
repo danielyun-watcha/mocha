@@ -16,6 +16,8 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from agents import AGENTS
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s | %(message)s",
@@ -31,6 +33,13 @@ MIGRATION_FILE = BASE_DIR / "migrations" / "001_init.sql"
 PORT = int(os.environ.get("PORT", os.environ.get("DEV_PORT", 8080)))
 DATABASE_URL = os.environ["DATABASE_URL"]
 MODEL = os.environ.get("MOCHA_MODEL", "claude-sonnet-4-6")
+
+# 세션당 USD 캡 — 풀 EDA 1회 실측 ~$1.6, 2배 헤드룸으로 $3.
+# 폭주(무한 루프 등) 가드. 초과 시 ResultMessage(subtype="error_max_budget_usd").
+MAX_BUDGET_USD = float(os.environ.get("MOCHA_MAX_BUDGET_USD", "3.0"))
+# NOTE: TaskBudget(token pacing hint)은 beta header(task-budgets-2026-03-13) 가 필요해서
+# sonnet-4-6 같은 일반 모델에선 API 400. Opus 일부 버전만 지원. 안정성 위해 비활성.
+# max_budget_usd 만으로 폭주 가드 충분.
 
 SYSTEM_PROMPT = """\
 당신은 MOCHA — Watcha 사내 데이터 분석 AI 어시스턴트입니다.
@@ -63,7 +72,10 @@ async def lifespan(app: FastAPI):
     db_pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=10)
     async with db_pool.acquire() as conn:
         await conn.execute(MIGRATION_FILE.read_text())
-    log.info("Migrations applied. Listening on :%d", PORT)
+    log.info(
+        "Migrations applied. Listening on :%d (model=%s, max_budget=$%.2f)",
+        PORT, MODEL, MAX_BUDGET_USD,
+    )
 
     yield
 
@@ -152,10 +164,12 @@ async def _stream_response(session_id: int, message: str) -> AsyncIterator[str]:
         cwd=str(BASE_DIR),
         plugins=[{"type": "local", "path": str(PLUGIN_DIR)}],
         skills="all",
+        agents=AGENTS,
         permission_mode="bypassPermissions",
         model=MODEL,
         system_prompt=SYSTEM_PROMPT,
-        max_turns=20,
+        max_turns=30,
+        max_budget_usd=MAX_BUDGET_USD,
         resume=sess["sdk_session_id"] if sess["sdk_session_id"] else None,
     )
 
@@ -186,7 +200,20 @@ async def _stream_response(session_id: int, message: str) -> AsyncIterator[str]:
 
             elif cls == "ResultMessage":
                 cost = getattr(msg, "total_cost_usd", None)
-                yield _sse("done", {"cost_usd": cost})
+                subtype = getattr(msg, "subtype", "success")
+                is_error = bool(getattr(msg, "is_error", False))
+                if is_error or subtype != "success":
+                    # budget 초과, max_turns 초과, API 에러 등 — 종료 사유 안내
+                    errored = True
+                    reason = subtype if subtype != "success" else "API/내부 에러"
+                    yield _sse("error", {
+                        "error": f"분석이 비정상 종료됨 — {reason}",
+                        "subtype": subtype,
+                        "is_error": is_error,
+                        "cost_usd": cost,
+                    })
+                else:
+                    yield _sse("done", {"cost_usd": cost})
                 break
 
             elif cls == "RateLimitEvent":
