@@ -3,7 +3,6 @@ name: eda-figures
 description: EDA 분석 결과 JSON을 받아 PPT 스타일 정적 PNG figures를 생성한다. 한국어 폰트·인사이트 박스·annotation을 자동 적용하며 분석 종류에 맞는 layout(stat_callout/pie/bar/boxplot/line/lorenz 등)을 선택한다. Use when 분석이 끝난 후 보고서·노션에 임베드할 그림이 필요할 때.
 allowed-tools: Read, Write, Bash(python3 *), Bash(ls *), Bash(mkdir *), Bash(cp *)
 argument-hint: <analysis_results.json> [output_dir] [--theme <name>]
-disable-model-invocation: true
 ---
 
 # EDA Figures
@@ -14,12 +13,28 @@ disable-model-invocation: true
 
 ## Workflow
 
-### Step 0: 입력 확정
+### Step 0: 입력 확정 (3가지 모드 지원 — standalone 가능)
 
-- 인자 1: `analysis_results.json` 경로 (필수)
-- 인자 2: 출력 디렉토리 (선택, 기본 `./figures/`)
-- `--theme <name>`: 테마 이름 (기본 `watcha-default`. 사용 가능 테마는 `themes/*.md`)
-- `--brief <path>`: `eda-intake`가 생성한 `analysis_brief.json` (선택, 도메인/기간/제목에 활용)
+**Mode A — analysis_results.json 받음 (eda 오케스트레이터 chain)**
+- 인자 1: `analysis_results.json` 경로
+- 인자 2: 출력 디렉토리 (기본 `./figures/`)
+- `scripts/render.py` 그대로 호출
+
+**Mode B — raw 데이터 경로 + 자연어 요청 (NARROW / standalone)**
+- 입력: `<data_path>` + 자연어 (예: "장르별 평점 수 TOP 5 막대")
+- analysis_results.json 없이 standalone 작동:
+  1. raw 데이터 (`*.ftr` / `*.parquet`) pandas 로 직접 읽기
+  2. 사용자 요청 통계 산출 (TOP N / 분포 / 시간 시리즈 등)
+  3. **이 skill 의 theme + layout 규칙 적용**해서 matplotlib 그리기:
+     - 한국어 폰트: `plt.rcParams['font.family']='NanumGothic'` (시스템에 `fonts-nanum` 설치됨. 만약 fontconfig 인식 실패 시 fallback: `import matplotlib.font_manager as fm; fm.fontManager.addfont('/home/daniel/.fonts/NanumGothic.ttf')`)
+     - Watcha 테마 색상: TOP 3 강조 `['#d97757','#6a9bcc','#788c5d']`, 비강조 `#e8e6dc`
+     - 막대그래프 vertical (x=카테고리, y=수치), figsize `(8, 5)`
+     - 차트 1개당 파일 1개 — subplot 합치지 말 것
+  4. 출력 `/tmp/eda/<filename>.png`, 답변에 `![](/eda-files/<filename>.png)` inline
+
+옵션 (모든 모드):
+- `--theme <name>`: 테마 이름 (기본 `watcha-default`)
+- `--brief <path>`: `eda-intake` 가 생성한 `analysis_brief.json` (도메인/기간/제목)
 
 ### Step 1: Layout 선택 (분석 결과 신호 → layout 매핑)
 

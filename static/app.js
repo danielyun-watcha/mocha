@@ -3,12 +3,14 @@
 const state = {
   sessionId: null,
   sessions: [],
+  selectedIds: new Set(),
   streaming: false,
 };
 
 const els = {
   sessionList: document.getElementById("session-list"),
   newBtn: document.getElementById("new-session"),
+  bulkBar: document.getElementById("bulk-bar"),
   messages: document.getElementById("messages"),
   form: document.getElementById("chat-form"),
   prompt: document.getElementById("prompt"),
@@ -57,13 +59,110 @@ async function fetchSessions() {
 
 function renderSessions() {
   els.sessionList.innerHTML = "";
+  // Drop selections that no longer exist
+  const existingIds = new Set(state.sessions.map((s) => s.id));
+  for (const id of state.selectedIds) {
+    if (!existingIds.has(id)) state.selectedIds.delete(id);
+  }
+
   for (const s of state.sessions) {
     const item = document.createElement("div");
     item.className = "session-item" + (s.id === state.sessionId ? " active" : "");
-    item.textContent = s.title;
-    item.onclick = () => loadSession(s.id);
+
+    const check = document.createElement("input");
+    check.type = "checkbox";
+    check.className = "session-check";
+    check.checked = state.selectedIds.has(s.id);
+    check.title = "선택";
+    check.onclick = (ev) => ev.stopPropagation();
+    check.onchange = () => {
+      if (check.checked) state.selectedIds.add(s.id);
+      else state.selectedIds.delete(s.id);
+      renderBulkBar();
+    };
+    item.appendChild(check);
+
+    const title = document.createElement("span");
+    title.className = "session-title";
+    title.textContent = s.title;
+    title.onclick = () => loadSession(s.id);
+    item.appendChild(title);
+
+    const del = document.createElement("button");
+    del.className = "session-del";
+    del.title = "이 분석 삭제";
+    del.setAttribute("aria-label", "삭제");
+    del.innerHTML = "&#x2715;";
+    del.onclick = (ev) => {
+      ev.stopPropagation();
+      deleteSession(s.id, s.title);
+    };
+    item.appendChild(del);
+
     els.sessionList.appendChild(item);
   }
+  renderBulkBar();
+}
+
+function renderBulkBar() {
+  if (!els.bulkBar) return;
+  const n = state.selectedIds.size;
+  if (n === 0) {
+    els.bulkBar.innerHTML = "";
+    els.bulkBar.classList.remove("active");
+    return;
+  }
+  els.bulkBar.classList.add("active");
+  els.bulkBar.innerHTML = `
+    <button class="bulk-action bulk-delete">🗑 선택 ${n}개 삭제</button>
+    <button class="bulk-action bulk-cancel">취소</button>
+  `;
+  els.bulkBar.querySelector(".bulk-delete").onclick = () => deleteSelected();
+  els.bulkBar.querySelector(".bulk-cancel").onclick = () => {
+    state.selectedIds.clear();
+    renderSessions();
+  };
+}
+
+async function deleteSession(id, title) {
+  if (!confirm(`"${title}" 분석을 삭제할까요? 메시지도 함께 삭제됩니다.`)) {
+    return;
+  }
+  const r = await fetch(`/api/sessions/${id}`, { method: "DELETE" });
+  if (!r.ok) {
+    alert("삭제 실패: " + r.status);
+    return;
+  }
+  state.selectedIds.delete(id);
+  if (state.sessionId === id) {
+    state.sessionId = null;
+    clearMessages();
+  }
+  await fetchSessions();
+}
+
+async function deleteSelected() {
+  const ids = Array.from(state.selectedIds);
+  if (ids.length === 0) return;
+  if (!confirm(`선택한 ${ids.length}개 분석을 삭제할까요? 메시지도 함께 삭제됩니다.`)) {
+    return;
+  }
+  const results = await Promise.all(
+    ids.map((id) =>
+      fetch(`/api/sessions/${id}`, { method: "DELETE" }).then((r) => ({ id, ok: r.ok })),
+    ),
+  );
+  const failed = results.filter((r) => !r.ok);
+  if (failed.length > 0) {
+    alert(`${failed.length}개 삭제 실패 (id: ${failed.map((r) => r.id).join(", ")})`);
+  }
+  // If active session was in the batch, clear chat
+  if (ids.includes(state.sessionId)) {
+    state.sessionId = null;
+    clearMessages();
+  }
+  state.selectedIds.clear();
+  await fetchSessions();
 }
 
 async function newSession(title = "새 분석") {
@@ -128,6 +227,12 @@ function appendMessage(role, text, { rendered = false } = {}) {
   };
   actions.appendChild(copyBtn);
   content.appendChild(actions);
+
+  // Per-image / per-table copy buttons (only meaningful when markdown rendered)
+  if (rendered) {
+    enhanceImages(content);
+    enhanceTables(content);
+  }
 
   inner.appendChild(avatar);
   inner.appendChild(content);
@@ -228,6 +333,7 @@ async function sendMessage(text) {
 }
 
 function reattachActions(content) {
+  // Message-level "copy whole message" action
   const actions = document.createElement("div");
   actions.className = "msg-actions";
   const copyBtn = document.createElement("button");
@@ -240,6 +346,93 @@ function reattachActions(content) {
   };
   actions.appendChild(copyBtn);
   content.appendChild(actions);
+
+  // Per-image / per-table copy buttons
+  enhanceImages(content);
+  enhanceTables(content);
+}
+
+// ---------- image / table copy enhancers ----------
+
+function enhanceImages(content) {
+  content.querySelectorAll("img").forEach((img) => {
+    if (img.dataset.enhanced) return;
+    img.dataset.enhanced = "1";
+    const wrap = document.createElement("div");
+    wrap.className = "img-wrap";
+    img.parentNode.insertBefore(wrap, img);
+    wrap.appendChild(img);
+
+    const btn = document.createElement("button");
+    btn.className = "media-copy-btn";
+    btn.textContent = "🖼 이미지 복사";
+    btn.onclick = () => copyImageToClipboard(img, btn);
+    wrap.appendChild(btn);
+  });
+}
+
+function enhanceTables(content) {
+  content.querySelectorAll("table").forEach((table) => {
+    if (table.dataset.enhanced) return;
+    table.dataset.enhanced = "1";
+    const wrap = document.createElement("div");
+    wrap.className = "table-wrap";
+    table.parentNode.insertBefore(wrap, table);
+    wrap.appendChild(table);
+
+    const btn = document.createElement("button");
+    btn.className = "media-copy-btn";
+    btn.textContent = "📋 표 복사 (MD)";
+    btn.onclick = () => copyTableAsMd(table, btn);
+    wrap.appendChild(btn);
+  });
+}
+
+async function copyImageToClipboard(img, btn) {
+  const original = btn.textContent;
+  try {
+    // Image lives at same-origin (/eda-files/...) so canvas isn't tainted.
+    const canvas = document.createElement("canvas");
+    canvas.width = img.naturalWidth || img.width;
+    canvas.height = img.naturalHeight || img.height;
+    canvas.getContext("2d").drawImage(img, 0, 0);
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+    await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
+    btn.textContent = "✓ 복사됨";
+  } catch (err) {
+    btn.textContent = "✗ 실패";
+    console.error("image copy failed:", err);
+  }
+  setTimeout(() => (btn.textContent = original), 1500);
+}
+
+function tableToMarkdown(table) {
+  const rows = Array.from(table.querySelectorAll("tr"));
+  if (rows.length === 0) return "";
+  return rows
+    .map((row, i) => {
+      const cells = Array.from(row.querySelectorAll("th, td")).map((c) =>
+        c.textContent.trim().replace(/\|/g, "\\|").replace(/\n/g, " "),
+      );
+      const line = "| " + cells.join(" | ") + " |";
+      if (i === 0) {
+        return line + "\n|" + cells.map(() => " --- ").join("|") + "|";
+      }
+      return line;
+    })
+    .join("\n");
+}
+
+async function copyTableAsMd(table, btn) {
+  const original = btn.textContent;
+  try {
+    await navigator.clipboard.writeText(tableToMarkdown(table));
+    btn.textContent = "✓ 복사됨";
+  } catch (err) {
+    btn.textContent = "✗ 실패";
+    console.error("table copy failed:", err);
+  }
+  setTimeout(() => (btn.textContent = original), 1500);
 }
 
 function handleEvent(ev, botContent, appendToBuf) {

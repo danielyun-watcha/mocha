@@ -2,13 +2,16 @@
 name: eda-report
 allowed-tools: Read, Write, Bash(python3 *)
 argument-hint: <results_json> [--mode full|qa] [--question "..."] [--figures-dir <path>] [--out <path>]
-disable-model-invocation: true
 description: analysis_results.json + figures를 받아 Korean Markdown 리포트로 변환한다. 풀 리포트(전체 EDA 산출물) + Q&A(개별 질문 답변) 듀얼 모드 지원. PANDA 답변구조(헤더 / 결과 표 / 집계 기준 / 인사이트 / Appendix) 적용. Use when 분석 결과 JSON을 한글 리포트로 변환하거나 누적된 결과에 대해 자연어 질문에 답할 때.
 ---
 
 # EDA Report Writer
 
 `analysis_results.json` (eda-overview + eda-casestudy가 누적 생성한 JSON) 과 figures 디렉토리를 입력으로 받아 **Korean Markdown 리포트** 를 생성한다. Notion paste-ready.
+
+**Standalone 호출 가능** — `eda` 오케스트레이터 거치지 않고 직접 호출 OK. 다음 케이스 지원:
+- analysis_results.json 받음 → 그대로 처리
+- raw `<data_path>` + 자연어 받음 → 자체적으로 pandas 로 분석 후 리포트 (Lead Opus 가 PANDA 5단 구조 따라 작성. render_qa.py / render_full_report.py 의 템플릿 참고)
 
 ## 듀얼 모드
 

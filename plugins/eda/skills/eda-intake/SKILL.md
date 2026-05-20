@@ -3,7 +3,6 @@ name: eda-intake
 description: EDA 시작 전 사용자에게 분석 데이터·기간·목적을 대화형으로 묻고 분석 brief를 생성한다. 자연어 도메인 키워드를 /archive 경로로 자동 매핑한다. /office-hours 스타일의 forced-alternatives + premise clarity 적용 — 모호한 답을 push해 진짜 의도까지 끌어냄. Use when 사용자가 /eda를 호출했거나 EDA 분석을 시작하려 할 때, brief.json이 없는 상태에서.
 allowed-tools: AskUserQuestion, Bash(ls *), Bash(find *), Bash(cat *), Bash(date *), Bash(python3 *), Read, Write
 argument-hint: [domain_or_path_hint]
-disable-model-invocation: true
 ---
 
 # EDA Intake — Office-Hours Patterns 적용

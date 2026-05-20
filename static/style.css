@@ -69,12 +69,77 @@ body {
 .session-item {
   padding: 8px 10px; border-radius: 6px; cursor: pointer;
   font-size: 13px; color: var(--ink-soft);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   border: 1px solid transparent;
+  display: flex; align-items: center; gap: 6px;
+}
+.session-item .session-check {
+  flex-shrink: 0;
+  width: 14px; height: 14px;
+  margin: 0;
+  cursor: pointer;
+  accent-color: var(--accent-soft);
+  opacity: 0;
+  transition: opacity 120ms;
+}
+/* Show checkbox on hover or when any selection active */
+.session-item:hover .session-check,
+.session-item .session-check:checked,
+.sidebar.has-selection .session-check { opacity: 1; }
+.session-item .session-title {
+  flex: 1; min-width: 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.session-item .session-del {
+  opacity: 0; flex-shrink: 0;
+  width: 22px; height: 22px; padding: 0;
+  border: none; background: transparent; cursor: pointer;
+  border-radius: 4px;
+  color: var(--ink-faint); font-size: 13px; line-height: 1;
+  transition: opacity 120ms, background-color 120ms, color 120ms;
 }
 .session-item:hover { background: var(--accent-faint); }
+.session-item:hover .session-del { opacity: 1; }
+.session-item .session-del:hover {
+  background: rgba(200, 40, 40, 0.12);
+  color: #c82828;
+}
 .session-item.active {
   background: var(--accent-faint); color: var(--ink);
+  border-color: var(--accent-soft);
+}
+.session-item.active .session-del { opacity: 0.7; }
+
+/* Bulk action bar — shown only when something selected */
+.bulk-bar {
+  display: none;
+  margin: 6px 0;
+  gap: 6px;
+  flex-direction: column;
+}
+.bulk-bar.active { display: flex; }
+.bulk-bar .bulk-action {
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: white;
+  color: var(--ink);
+  font-size: 12px;
+  cursor: pointer;
+  text-align: left;
+  transition: background-color 120ms, border-color 120ms;
+}
+.bulk-bar .bulk-delete {
+  background: rgba(200, 40, 40, 0.06);
+  border-color: rgba(200, 40, 40, 0.3);
+  color: #c82828;
+  font-weight: 600;
+}
+.bulk-bar .bulk-delete:hover {
+  background: rgba(200, 40, 40, 0.14);
+  border-color: rgba(200, 40, 40, 0.5);
+}
+.bulk-bar .bulk-cancel:hover {
+  background: var(--accent-faint);
   border-color: var(--accent-soft);
 }
 .sidebar-foot {
@@ -171,6 +236,39 @@ body {
   margin: 0.5em 0; padding-left: 1.6em;
 }
 .msg-content li { margin: 0.2em 0; }
+/* image / table wrappers — copy button overlay on hover */
+.msg-content .img-wrap,
+.msg-content .table-wrap {
+  position: relative;
+  margin: 0.8em 0;
+  display: inline-block;
+  max-width: 100%;
+}
+.msg-content .table-wrap { display: block; overflow-x: auto; }
+.msg-content .img-wrap img,
+.msg-content .table-wrap table { margin: 0; }
+.msg-content .media-copy-btn {
+  position: absolute;
+  top: 8px; right: 8px;
+  padding: 4px 10px;
+  font-size: 11px;
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 120ms, background-color 120ms;
+  color: var(--ink-soft);
+  z-index: 2;
+}
+.msg-content .img-wrap:hover .media-copy-btn,
+.msg-content .table-wrap:hover .media-copy-btn { opacity: 1; }
+.msg-content .media-copy-btn:hover {
+  background: white;
+  color: var(--ink);
+  border-color: var(--accent-soft);
+}
+
 .msg-content table {
   border-collapse: collapse; margin: 0.8em 0;
   font-size: 0.93em;

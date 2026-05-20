@@ -3,7 +3,6 @@ name: eda-overview
 description: 데이터셋 개요 + 시간 트렌드 + Long-tail + 주요 변수 분포 + 데이터 품질을 한 번에 분석한다. RecSys 표준 지표(sparsity/density/interactions per user)를 자동 계산하며, 분석 결과를 analysis_results.json에 추가한다. Use when EDA의 첫 단계로 데이터 전반 특성을 파악할 때.
 allowed-tools: Read, Write, Bash(python3 *), Bash(ls *)
 argument-hint: <data_path> [--brief <brief.json>] [--out <analysis_results.json>] [--append]
-disable-model-invocation: true
 ---
 
 # EDA Overview
@@ -11,6 +10,8 @@ disable-model-invocation: true
 ## Overview
 
 데이터셋 전반 특성을 한 번에 분석하는 스킬. RecSys 표준 지표(sparsity, interactions per user/item)와 시간 트렌드, long-tail, 데이터 품질을 자동 계산한다. 분석 결과를 `analysis_results.json`에 추가하며, 이후 `eda-figures`가 이걸 읽어 PPT-style 그림을 자동 생성한다.
+
+**Standalone 호출 가능** — `eda` 오케스트레이터 거치지 않고 직접 호출 OK. raw `<data_path>` 받아 자체적으로 처리, 결과 JSON 반환.
 
 ## Workflow
 

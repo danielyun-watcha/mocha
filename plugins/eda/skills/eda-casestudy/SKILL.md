@@ -3,7 +3,6 @@ name: eda-casestudy
 description: 보고서 Appendix에 들어갈 구체 사례를 추출한다 — 큰손 유저 TOP10, 충성 콘텐츠 TOP10, 헤비 rater 등. 도메인별 분기(mars/galaxy/adult/negative)로 적절한 case study 자동 선택. 또한 분석 도중 발견된 follow-up 제안을 analysis_suggestions에 누적. Use when EDA 끝나고 Appendix 케이스 추출이 필요할 때.
 allowed-tools: Read, Write, Bash(python3 *), Bash(ls *)
 argument-hint: <data_path> [--brief <brief.json>] [--out <analysis_results.json>] [--append] [--top-n 10]
-disable-model-invocation: true
 ---
 
 # EDA Case Study
@@ -11,6 +10,8 @@ disable-model-invocation: true
 ## Overview
 
 보고서 Appendix용 구체 사례 추출 스킬. "큰손 유저는 누구이고 얼마 썼는가", "충성도 높은 시리즈는 무엇인가" 같은 구체적 케이스를 TOP N 형태로 뽑아 `case_studies` 키에 저장한다. 도메인별로 자동 분기 (mars / galaxy / adult / negative).
+
+**Standalone 호출 가능** — `eda` 오케스트레이터 거치지 않고 직접 호출 OK. raw `<data_path>` 받아 자체적으로 처리. `--out` 생략 시 결과를 stdout 으로 출력 (Lead 가 받아서 답변에 활용).
 
 또한 분석 도중 "더 보면 좋겠다"는 follow-up은 `analysis_suggestions` 키에 누적하여, 보고서 마지막의 "다음 분석 제안" 파트로 활용한다.
 
