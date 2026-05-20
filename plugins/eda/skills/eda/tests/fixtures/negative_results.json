@@ -1,0 +1,24 @@
+{
+  "_meta": {
+    "domain": "graph_modeling",
+    "data_path": "/archive/graph_modeling/exp-260406_daniel_mehs",
+    "main_file": "hard_neg_edges.ftr",
+    "n_rows": 1423706,
+    "key_metric": "play"
+  },
+  "overview": {
+    "n_users": 145000,
+    "n_contents": 14400,
+    "n_rows": 1423706,
+    "sparsity_pct": 99.93
+  },
+  "case_studies": {
+    "meh_heavy_users_top10": [{"user_id": 4329, "n_mehs": 7595}],
+    "high_neg_ratio_content_top10": [{"content_id": 8059, "content_key": "1:7883", "neg_ratio": 0.983}]
+  },
+  "analysis_suggestions": [
+    "부정 비율 90%+ 콘텐츠 664개 — 학습 hard negative pool 우선 후보",
+    "MEH Gini ~1.00 — 헤비 큐레이터"
+  ],
+  "data_quality": {"n_duplicates": 0, "value_outlier": {"p95": 100, "p99": 500, "max": 1000}}
+}

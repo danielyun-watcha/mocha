@@ -1,0 +1,19 @@
+{
+  "_meta": {
+    "domain": "graph_modeling",
+    "data_path": "/archive/graph_modeling/builtin",
+    "main_file": "train.ftr",
+    "n_rows": 5000,
+    "key_metric": "play",
+    "key_metric_label": "Play (시청)"
+  },
+  "overview": {
+    "n_users": 1000,
+    "n_contents": 500,
+    "n_rows": 5000,
+    "sparsity_pct": 99.0,
+    "avg_per_user": 5.0
+  },
+  "analysis_suggestions": [],
+  "case_studies": {}
+}
