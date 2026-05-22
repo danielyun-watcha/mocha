@@ -27,7 +27,7 @@ COPY --from=deps /root/.local /root/.local
 ENV PATH=/root/.local/bin:$PATH
 
 COPY main.py ./
-COPY agents.py ./
+COPY agents ./agents
 COPY migrations ./migrations
 COPY static ./static
 COPY plugins ./plugins

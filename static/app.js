@@ -242,10 +242,69 @@ function appendMessage(role, text, { rendered = false } = {}) {
   return { row, content };
 }
 
+// Semantic labels — translate raw tool names → user-friendly progress
+const TOOL_SEMANTIC = {
+  Bash: "📊 분석 실행 중...",
+  Read: "📋 자료 확인 중...",
+  Write: "✍️ 결과 정리 중...",
+  Edit: "✏️ 답변 수정 중...",
+  Glob: "🔍 파일 탐색 중...",
+  Grep: "🔍 자료 검색 중...",
+  Skill: "🎨 sub-skill 호출 중...",
+  Agent: "🤝 sub-agent 호출 중...",
+  AskUserQuestion: "❓ 사용자 확인 중...",
+};
+
 function appendToolChip(name) {
+  const label = TOOL_SEMANTIC[name] || `🔧 ${name}`;
+  // Merge consecutive identical labels into a count badge
+  const last = els.messages.lastElementChild;
+  if (last && last.classList.contains("tool-chip") && last.dataset.toolName === name) {
+    const count = parseInt(last.dataset.count || "1", 10) + 1;
+    last.dataset.count = String(count);
+    last.textContent = `${label} (${count})`;
+    return;
+  }
   const chip = document.createElement("div");
   chip.className = "tool-chip";
-  chip.textContent = `🔧 ${name}`;
+  chip.dataset.toolName = name;
+  chip.dataset.count = "1";
+  chip.textContent = label;
+  els.messages.appendChild(chip);
+  scrollToBottom();
+}
+
+const DOMAIN_LABEL = {
+  ml_1m: "🎬 ML-1M",
+  watcha_main: "🎞️ Watcha",
+  adult: "🔞 성인+",
+  pedia: "⭐ 피디아",
+  unknown: "❔ 도메인 미정",
+};
+
+function appendGatewayChip(payload) {
+  const chip = document.createElement("div");
+  chip.className = "gateway-chip";
+  if (payload.status === "classifying") {
+    chip.textContent = "🚦 의도 분류 중...";
+    chip.dataset.gatewayStatus = "classifying";
+  } else if (payload.status === "classified") {
+    const trackIcon = payload.track === "fast" ? "🏎️" : "🐢";
+    const trackLabel = payload.track === "fast" ? "Fast" : "Slow";
+    const domainLabel = DOMAIN_LABEL[payload.domain] || payload.domain || "";
+    chip.textContent = `${trackIcon} ${trackLabel} · ${payload.intent}` +
+      (domainLabel ? ` · ${domainLabel}` : "");
+    chip.dataset.gatewayStatus = "classified";
+    chip.dataset.track = payload.track;
+    if (payload.domain) chip.dataset.domain = payload.domain;
+    // Replace prior "classifying" chip if present
+    const prev = els.messages.querySelector('.gateway-chip[data-gateway-status="classifying"]');
+    if (prev) {
+      prev.replaceWith(chip);
+      scrollToBottom();
+      return;
+    }
+  }
   els.messages.appendChild(chip);
   scrollToBottom();
 }
@@ -443,6 +502,8 @@ function handleEvent(ev, botContent, appendToBuf) {
     scrollToBottom();
   } else if (ev.type === "tool") {
     appendToolChip(ev.name);
+  } else if (ev.type === "gateway") {
+    appendGatewayChip(ev);
   } else if (ev.type === "error") {
     appendError(ev.error);
   } else if (ev.type === "done") {

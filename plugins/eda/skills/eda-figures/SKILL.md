@@ -26,7 +26,9 @@ argument-hint: <analysis_results.json> [output_dir] [--theme <name>]
   1. raw 데이터 (`*.ftr` / `*.parquet`) pandas 로 직접 읽기
   2. 사용자 요청 통계 산출 (TOP N / 분포 / 시간 시리즈 등)
   3. **이 skill 의 theme + layout 규칙 적용**해서 matplotlib 그리기:
-     - 한국어 폰트: `plt.rcParams['font.family']='NanumGothic'` (시스템에 `fonts-nanum` 설치됨. 만약 fontconfig 인식 실패 시 fallback: `import matplotlib.font_manager as fm; fm.fontManager.addfont('/home/daniel/.fonts/NanumGothic.ttf')`)
+     - 한국어 폰트: `plt.rcParams['font.family']='NanumGothic'` (시스템에 `fonts-nanum` 설치됨). 인식 실패 시 환경별 fallback:
+       - **컨테이너 (배포)**: `fm.fontManager.addfont('/usr/share/fonts/truetype/nanum/NanumGothic.ttf')` (apt fonts-nanum 표준 경로)
+       - **워크스페이스 dev**: `fm.fontManager.addfont('/home/daniel/.fonts/NanumGothic.ttf')`
      - Watcha 테마 색상: TOP 3 강조 `['#d97757','#6a9bcc','#788c5d']`, 비강조 `#e8e6dc`
      - 막대그래프 vertical (x=카테고리, y=수치), figsize `(8, 5)`
      - 차트 1개당 파일 1개 — subplot 합치지 말 것
