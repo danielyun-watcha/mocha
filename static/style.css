@@ -153,7 +153,7 @@ body {
 }
 
 .messages {
-  flex: 1; overflow-y: auto;
+  flex: 1; min-height: 0; overflow-y: auto;
   display: flex; flex-direction: column;
   padding: 24px 0 12px;
 }
@@ -383,6 +383,7 @@ body {
 
 /* ---------- Composer ---------- */
 .composer-wrap {
+  flex-shrink: 0;
   padding: 12px 24px 16px;
   background: linear-gradient(to bottom, transparent, var(--bg) 30%);
 }
@@ -421,6 +422,11 @@ body {
   cursor: not-allowed;
 }
 .composer button svg { transform: translate(-1px, 0); }
+.composer button[data-mode="stop"] {
+  background: var(--ink);
+}
+.composer button[data-mode="stop"]:hover { background: #000; }
+.composer button[data-mode="stop"] svg { transform: none; }
 
 .composer-hint {
   text-align: center;
@@ -430,6 +436,7 @@ body {
 }
 
 .page-footer {
+  flex-shrink: 0;
   text-align: center;
   padding: 6px 8px 10px;
   background: transparent;

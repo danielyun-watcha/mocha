@@ -22,19 +22,22 @@ def render(key, value, theme, output_path, brief=None):
     max_idx = vals.index(max(vals))
     cols = [PASTEL_RED if i == max_idx else PASTEL_GRAY for i, _ in enumerate(items)]
 
-    fig, ax = plt.subplots(figsize=(12, 4.8))  # 세로 80%
-    bars = ax.bar(labels, vals, color=cols, edgecolor="black", linewidth=1.5)
+    fig, ax = plt.subplots(figsize=(10, 5.5), facecolor="white")
+    ax.set_facecolor("white")
+    bars = ax.bar(labels, vals, color=cols, edgecolor="none", linewidth=0)
     for bar, v in zip(bars, vals):
-        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + max(vals) * 0.02,
+        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + max(vals) * 0.015,
                 f"{v:.1f}{unit}" if is_pct else f"{v:,}",
-                ha="center", fontsize=13, weight="bold")
+                ha="center", fontsize=10, color="#333")
 
     ax.set_xlabel(key.replace("_buckets", "").replace("_pct", "").replace("_", " "),
-                  fontsize=14)
-    ax.set_ylabel(f"비율 ({unit})" if is_pct else "건수", fontsize=14)
-    ax.set_title(f"{key} — 구간 분포", fontsize=15, weight="bold", pad=15)
+                  fontsize=12, color="#555")
+    ax.set_ylabel(f"비율 ({unit})" if is_pct else "건수", fontsize=12, color="#555")
+    ax.set_title(f"{key} — 구간 분포", fontsize=16, weight="bold", loc="left",
+                 pad=15, color="#1a1a1a")
     clean_spines(ax)
-    ax.grid(axis="y", alpha=0.3)
+    ax.grid(False)
+    ax.tick_params(colors="#555")
     if is_pct:
         ax.set_ylim(0, max(vals) * 1.2)
 

@@ -5,6 +5,7 @@ const state = {
   sessions: [],
   selectedIds: new Set(),
   streaming: false,
+  abortController: null,
 };
 
 const els = {
@@ -342,18 +343,21 @@ async function sendMessage(text) {
   if (welcome) welcome.remove();
 
   state.streaming = true;
-  els.send.disabled = true;
+  state.abortController = new AbortController();
+  setSendButtonMode("stop");
 
   appendMessage("user", text, { rendered: true });
   const { content: botContent } = appendMessage("assistant", "", { rendered: false });
   botContent.classList.add("streaming");
   let buf = "";
+  let aborted = false;
 
   try {
     const resp = await fetch(`/api/sessions/${state.sessionId}/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ message: text }),
+      signal: state.abortController.signal,
     });
 
     const reader = resp.body.getReader();
@@ -378,7 +382,12 @@ async function sendMessage(text) {
       }
     }
   } catch (err) {
-    appendError(`오류: ${err.message}`);
+    if (err.name === "AbortError") {
+      aborted = true;
+      buf += (buf ? "\n\n" : "") + "_⏹ 중지됨_";
+    } else {
+      appendError(`오류: ${err.message}`);
+    }
   } finally {
     botContent.classList.remove("streaming");
     botContent.dataset.raw = buf;
@@ -386,8 +395,33 @@ async function sendMessage(text) {
     // re-attach actions (overwritten by innerHTML)
     reattachActions(botContent);
     state.streaming = false;
-    els.send.disabled = false;
+    state.abortController = null;
+    setSendButtonMode("send");
     fetchSessions();
+  }
+}
+
+function setSendButtonMode(mode) {
+  // mode: "send" (default arrow) or "stop" (square — interrupt streaming)
+  els.send.disabled = false;
+  if (mode === "stop") {
+    els.send.dataset.mode = "stop";
+    els.send.setAttribute("aria-label", "중지");
+    els.send.innerHTML =
+      '<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor">' +
+      '<rect x="5" y="5" width="14" height="14" rx="1.5"/></svg>';
+  } else {
+    els.send.dataset.mode = "send";
+    els.send.setAttribute("aria-label", "전송");
+    els.send.innerHTML =
+      '<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor">' +
+      '<path d="M3 11l18-8-8 18-2-8z"/></svg>';
+  }
+}
+
+function abortCurrentStream() {
+  if (state.streaming && state.abortController) {
+    state.abortController.abort();
   }
 }
 
@@ -427,6 +461,12 @@ function enhanceImages(content) {
     btn.textContent = "🖼 이미지 복사";
     btn.onclick = () => copyImageToClipboard(img, btn);
     wrap.appendChild(btn);
+
+    // Re-anchor to bottom when the chart finishes loading — otherwise the
+    // sudden height bump pushes the composer below the fold.
+    if (!img.complete) {
+      img.addEventListener("load", scrollToBottom, { once: true });
+    }
   });
 }
 
@@ -546,6 +586,11 @@ els.newBtn.onclick = () => {
 
 els.form.onsubmit = (e) => {
   e.preventDefault();
+  // Send button doubles as stop while streaming.
+  if (state.streaming) {
+    abortCurrentStream();
+    return;
+  }
   const text = els.prompt.value;
   els.prompt.value = "";
   autoResize();
@@ -557,6 +602,14 @@ els.prompt.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
     els.form.requestSubmit();
+  }
+});
+
+// ESC anywhere on the page interrupts an in-flight stream.
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && state.streaming) {
+    e.preventDefault();
+    abortCurrentStream();
   }
 });
 
