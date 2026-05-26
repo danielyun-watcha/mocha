@@ -1,0 +1,5 @@
+{
+  "name": "eda",
+  "version": "1.0.0",
+  "description": "Agentic EDA — PANDA-style 답변 (결과+기준+인사이트) + Plan-Generate-Evaluate ReAct + KST 보정 + Validator. 7 skills."
+}

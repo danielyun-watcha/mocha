@@ -1,0 +1,6 @@
+data: {"type": "gateway", "status": "classifying"}
+
+data: {"type": "gateway", "status": "classified", "track": "slow", "intent": "broad_eda", "summary": "분류 실패 — slow track default"}
+
+data: {"type": "error", "error": "Command failed with exit code 1 (exit code: 1)\nError output: Check stderr output for details"}
+

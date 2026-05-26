@@ -1,0 +1,26 @@
+data: {"type": "gateway", "status": "classifying"}
+
+data: {"type": "gateway", "status": "classified", "track": "fast", "intent": "narrow_top_n", "domain": "watcha_main", "summary": "왓챠 도메인에서 평점 높은 영화 TOP N 시각화 요청"}
+
+data: {"type": "tool", "name": "Agent", "input": {"description": "Archive file discovery", "subagent_type": "Explore", "prompt": "Find all files in /archive/graph_modeling/builtin/ and /archive/next_watch/default/ — list every file path with extension. Also check if there are any parquet or csv files directly under /archive/grap…"}}
+
+data: {"type": "rate_limit", "message": "RateLimitEvent(rate_limit_info=RateLimitInfo(status='allowed_warning', resets_at=1779465600, rate_limit_type='seven_day', utilization=0.96, overage_status=None, overage_resets_at=None, overage_disabled_reason=None, raw={'status': 'allowed_warning', 'resetsAt': 1779465600, 'rateLimitType': 'seven_day', 'utilization': 0.96, 'isUsingOverage': False, 'surpassedThreshold': 0.75}), uuid='a2a181c8-26b7-4984-9b5e-ad3e40dffd54', session_id='35fe884a-69d9-49aa-8260-03615d83a749')"}
+
+data: {"type": "tool", "name": "Bash", "input": {"command": "find /archive/graph_modeling/builtin/ -type f 2>/dev/null | sort"}}
+
+data: {"type": "tool", "name": "Bash", "input": {"command": "find /archive/next_watch/default/ -type f 2>/dev/null | sort"}}
+
+data: {"type": "rate_limit", "message": "RateLimitEvent(rate_limit_info=RateLimitInfo(status='allowed_warning', resets_at=1779465600, rate_limit_type='seven_day', utilization=0.97, overage_status=None, overage_resets_at=None, overage_disabled_reason=None, raw={'status': 'allowed_warning', 'resetsAt': 1779465600, 'rateLimitType': 'seven_day', 'utilization': 0.97, 'isUsingOverage': False, 'surpassedThreshold': 0.75}), uuid='dda50f3d-c8c3-403e-8df2-62275f96299e', session_id='35fe884a-69d9-49aa-8260-03615d83a749')"}
+
+data: {"type": "tool", "name": "Bash", "input": {"command": "find /archive/graph_modeling/ -maxdepth 1 -type f \\( -name \"*.parquet\" -o -name \"*.csv\" -o -name \"*.pq\" \\) 2>/dev/null | sort"}}
+
+data: {"type": "tool", "name": "Bash", "input": {"command": "find /archive/next_watch/ -maxdepth 1 -type f \\( -name \"*.parquet\" -o -name \"*.csv\" -o -name \"*.pq\" \\) 2>/dev/null | sort"}}
+
+data: {"type": "tool", "name": "Bash", "input": {"command": "python3 - << 'EOF'\nimport pandas as pd\nimport pickle\nimport matplotlib.pyplot as plt\nimport matplotlib.font_manager as fm\nimport os\n\nos.makedirs('/tmp/eda', exist_ok=True)\n\n# ── 한글 폰트 ────────────────…"}}
+
+data: {"type": "tool", "name": "Read", "input": {"file_path": "/workspace/plugins/eda/templates/01_light_memo.md"}}
+
+data: {"type": "text", "text": "---\n\n## 📊 왓챠 도메인 평점 높은 콘텐츠 TOP 10\n\n**질문 요약**: `train.ftr` 기준 평균 별점이 가장 높은 콘텐츠 TOP 10 (min 50명 필터)\n\n![](/eda-files/top10_highest_rated.png)\n\n### 결과 테이블\n\n| 순위 | Content ID | 평균 별점 | 평가 수 |\n|:--:|:--:|:--:|:--:|\n| 1 | 329 | ★ 3.97 | 51명 |\n| 2 | 655 | ★ 3.96 | 75명 |\n| 3 | 5100 | ★ 3.95 | 106명 |\n| 4 | 4876 | ★ 3.93 | 62명 |\n| 5 | 751 | ★ 3.91 | 98명 |\n| 6 | 5111 | ★ 3.91 | 113명 |\n| 7 | 7200 | ★ 3.91 | 110명 |\n| 8 | 8672 | ★ 3.90 | 107명 |\n| 9 | 10409 | ★ 3.89 | 56명 |\n| 10 | 9062 | ★ 3.89 | 80명 |\n\n**집계 기준**: `train.ftr` value 2~10 (별점 인터랙션) / min 50명 필터 → **438편** 중 TOP 10 / 별점 스케일 ÷2 변환 (1–10 → 0.5–5)\n\n💡 **평점 상위권은 3.9~4.0 구간에 밀집** — 5점 만점 기준 4.0에 근접한 작품이 10위권 내에 없다는 것은 극단적 고평점보다 \"고르게 좋은 평가\"를 받은 콘텐츠들이 상위권임을 시사.\n\n---\n*`contents.pkl`의 인덱스 구조가 예상과 달라 타이틀 매핑 실패 — ID가 표시됨. 실제 영화 제목 확인이 필요하시면 말씀해 주세요.*"}
+
+data: {"type": "done", "cost_usd": 0.33184115}
+

@@ -1,0 +1,35 @@
+{
+  "_meta": {
+    "domain": "graph_modeling",
+    "data_path": "/archive/graph_modeling/builtin",
+    "main_file": "train.ftr",
+    "n_rows": 2329797,
+    "period_start": "2026-01-13",
+    "period_end": "2026-05-12",
+    "n_days": 119,
+    "key_metric": "play",
+    "key_metric_label": "Play (시청)"
+  },
+  "overview": {
+    "n_users": 142181,
+    "n_contents": 14425,
+    "n_rows": 2329797,
+    "sparsity_pct": 99.886,
+    "avg_per_user": 16.4
+  },
+  "daily_volume": {"2026-01-13": 13869, "2026-05-12": 22000},
+  "pareto_long_tail": {"top1pct": 15.4, "top5pct": 40.5, "top10pct": 56.7, "top20pct": 75.0},
+  "lorenz": {"x_pct": [1.0, 50.0, 100.0], "y_pct": [15.4, 80.0, 100.0]},
+  "gini": 0.715,
+  "value_describe": {"n": 2329797, "median": 501.2, "mean": 736.8, "std": 1353.7, "min": 5.0, "max": 698017.6},
+  "data_quality": {"n_duplicates": 0, "null_pct_by_column": {}, "notes": []},
+  "case_studies": {
+    "heavy_users_top10": [{"user_id": 24866, "n_rows": 49, "value_sum": 16545}],
+    "loyal_content_top10": [{"content_id": 3344937, "content_key": "2:3344937", "avg_value": 3564.5, "n_viewers": 169}],
+    "peak_hours_top10": [{"hour": 23, "n_actions": 187454}]
+  },
+  "analysis_suggestions": [
+    "시청 피크 시간대 KST 23시 (저녁/심야) — 187,454건",
+    "평균 value 5000+ 콘텐츠 9개"
+  ]
+}
