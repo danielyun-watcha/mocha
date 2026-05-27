@@ -36,9 +36,11 @@ PORT = int(os.environ.get("PORT", os.environ.get("DEV_PORT", 8080)))
 DATABASE_URL = os.environ["DATABASE_URL"]
 MODEL = os.environ.get("MOCHA_MODEL", "claude-sonnet-4-6")
 
+# Personal API key (sk-ant-api03-...) — 우선 사용. 없으면 team OAuth fallback.
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
+
 # OAuth: claude.ai team subscription 의 access token 으로 Anthropic API 직접 호출.
-# API key (sk-ant-api03-...) 와 다른 인증 — subscription quota 만 소모, 추가 과금 X.
-# subprocess CLI spawn overhead (~5-10s) 우회 → fast track 응답 5-8s 가능.
+# ANTHROPIC_API_KEY 미설정 시에만 사용.
 _OAUTH_CRED_PATH = Path(os.environ.get("CLAUDE_OAUTH_CRED", "/root/.claude/.credentials.json"))
 
 
@@ -60,28 +62,38 @@ def _load_oauth_token() -> str | None:
 
 async def stream_oauth_completion(
     model: str, system: str, user_msg: str, max_tokens: int = 2048,
+    history: list[dict] | None = None,
 ) -> AsyncIterator[tuple[str, str]]:
-    """Stream Anthropic Messages via OAuth Bearer.
+    """Stream Anthropic Messages via personal API key or OAuth Bearer fallback.
 
     Yields ('text', delta) chunks and a final ('done', cost_json).
     Falls back gracefully on auth/network errors via ('error', detail).
+    history: prior [{"role":"user"|"assistant","content":"..."}] messages for context.
     """
-    token = _load_oauth_token()
-    if not token:
-        yield ("error", "OAuth token unavailable or expired — claude /login 필요")
-        return
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "anthropic-version": "2023-06-01",
-        "content-type": "application/json",
-        "accept": "text/event-stream",
-    }
+    if ANTHROPIC_API_KEY:
+        headers = {
+            "x-api-key": ANTHROPIC_API_KEY,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+            "accept": "text/event-stream",
+        }
+    else:
+        token = _load_oauth_token()
+        if not token:
+            yield ("error", "OAuth token unavailable or expired — claude /login 필요")
+            return
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+            "accept": "text/event-stream",
+        }
     payload = {
         "model": model,
         "max_tokens": max_tokens,
         "stream": True,
         "system": system,
-        "messages": [{"role": "user", "content": user_msg}],
+        "messages": [*(history or []), {"role": "user", "content": user_msg}],
     }
     usage = {"input_tokens": 0, "output_tokens": 0}
     try:
@@ -1234,10 +1246,26 @@ async def _stream_response(session_id: int, message: str) -> AsyncIterator[str]:
             f"부연 = 숫자/사실. 해석 = '~로 보임/시사함'. "
             f"No tools/thinking/explore text. No extra sections outside the 4 blocks above.\n"
         )
+        # Fetch prior messages for conversation context (last 3 exchanges before this turn)
+        fast_history: list[dict] = []
+        try:
+            async with db_pool.acquire() as conn:
+                prev_msgs = await conn.fetch(
+                    "SELECT role, content FROM messages "
+                    "WHERE session_id=$1 "
+                    "AND id < (SELECT max(id) FROM messages WHERE session_id=$1) "
+                    "ORDER BY id DESC LIMIT 6",
+                    session_id,
+                )
+            fast_history = [{"role": r["role"], "content": r["content"]} for r in reversed(prev_msgs)]
+        except Exception:
+            log.exception("Failed to fetch fast-track conversation history")
+
         full_text = []
         usage_info = None
         async for kind, payload_ in stream_oauth_completion(
             model=lead_model, system=fast_system, user_msg=message, max_tokens=2048,
+            history=fast_history or None,
         ):
             if kind == "text":
                 full_text.append(payload_)
