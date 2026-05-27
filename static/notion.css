@@ -128,6 +128,25 @@
   background: rgba(255,255,255,0.025) !important;
 }
 
+/* ── Content title 가독성 — pill 옆 title 강조 + 1줄 ellipsis ── */
+.t-content {
+  white-space: nowrap !important;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 320px;
+}
+.t-content .t-title {
+  display: inline-block;
+  vertical-align: middle;
+  font-weight: 500;
+  color: var(--ink);
+  line-height: 1.4;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* ── Top-N list (top contents/genres/actors) — flat ── */
 .top10-list, .top-list {
   background: transparent !important;
@@ -150,6 +169,15 @@
   border: 0 !important;
 }
 
+/* ── Chat assistant avatar = mocha 얼굴 (transparent PNG) ── */
+.avatar.assistant {
+  background: url("/static/mocha-avatar.png") no-repeat center / contain !important;
+  width: 36px !important; height: 36px !important;
+  border-radius: 50% !important;
+  box-shadow: none !important;
+}
+.avatar.assistant > * { display: none !important; }
+
 /* ── 답변 메시지 — assistant bubble flatter, more spacing ── */
 .msg-row.assistant .msg-content {
   background: var(--panel-soft) !important;
@@ -157,6 +185,45 @@
   padding: 14px 18px !important;
   line-height: 1.7 !important;
 }
+
+/* ── Rail "MOCHA" icon (Agent 위치) ── */
+.rail-mocha-icon {
+  display: inline-block;
+  width: 22px; height: 22px;
+  background: url("/static/mocha-avatar.png") no-repeat center / contain;
+  vertical-align: middle;
+}
+
+/* ── Chat view 우상단 theme toggle (dashboard와 동일 위치/스타일) ── */
+.chat-header {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 20px 0;
+  flex-shrink: 0;
+}
+/* /archive 저장 버튼 — 메시지 1개 이상 있을 때만 노출 */
+.archive-btn {
+  background: var(--panel-soft);
+  color: var(--ink);
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+  display: none;  /* JS toggles when messages > 0 */
+}
+.archive-btn.visible { display: inline-block; }
+.archive-btn:hover { background: var(--panel-hover); border-color: var(--accent-soft); }
+.archive-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.archive-btn.saved { background: var(--accent); color: white; border-color: var(--accent); }
+.chat-header .theme-toggle .theme-icon-light { display: none; }
+.chat-header .theme-toggle .theme-icon-dark { display: inline; }
+[data-theme="dark"] .chat-header .theme-toggle .theme-icon-dark { display: none; }
+[data-theme="dark"] .chat-header .theme-toggle .theme-icon-light { display: inline; }
 .msg-row.user .msg-content {
   background: var(--accent) !important;
   padding: 10px 14px !important;
@@ -168,17 +235,16 @@
   line-height: 1.3;
   letter-spacing: -0.01em;
 }
-.msg-content h1 { font-size: 1.35em !important; font-weight: 700; }
+.msg-content h1 { font-size: 1.5em !important; font-weight: 700 !important; }
 .msg-content h2 {
-  font-size: 0.85em !important;
-  font-weight: 600 !important;
-  text-transform: uppercase;
-  letter-spacing: 0.04em !important;
-  color: var(--ink-faint) !important;
-  margin-top: 1.8em !important;
+  font-size: 1.2em !important;
+  font-weight: 700 !important;
+  color: var(--ink) !important;
+  margin-top: 1.6em !important;
   margin-bottom: 0.5em !important;
+  letter-spacing: -0.01em !important;
 }
-.msg-content h3 { font-size: 1.0em !important; font-weight: 600; }
+.msg-content h3 { font-size: 1.05em !important; font-weight: 600 !important; color: var(--ink) !important; }
 
 /* footer 데이터 출처 — muted callout */
 .msg-content hr + p,

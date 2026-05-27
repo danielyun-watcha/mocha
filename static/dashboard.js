@@ -71,6 +71,17 @@ function initTheme() {
 }
 initTheme();
 
+// Chat view theme toggle — same handler, same setTheme.
+document.addEventListener("DOMContentLoaded", () => {
+  const btn = document.querySelector(".chat-header .theme-toggle");
+  if (btn) {
+    btn.addEventListener("click", () => {
+      const current = document.documentElement.dataset.theme || "dark";
+      setTheme(current === "dark" ? "light" : "dark");
+    });
+  }
+});
+
 // ───────── view router ─────────
 function showView(name) {
   for (const el of document.querySelectorAll(".view")) el.hidden = el.dataset.view !== name;
@@ -120,11 +131,14 @@ function mountKpiView(domain) {
   startInp.addEventListener("change", () => loadKpi(domain));
   endInp.addEventListener("change", () => loadKpi(domain));
 
-  // Theme toggle (per-view button; wires to global state)
-  node.querySelector(".theme-toggle").addEventListener("click", () => {
-    const current = document.documentElement.dataset.theme || "dark";
-    setTheme(current === "dark" ? "light" : "dark");
-  });
+  // Theme toggle — moved to global floating button in rail. In-view toggle removed.
+  const localToggle = node.querySelector(".theme-toggle");
+  if (localToggle) {
+    localToggle.addEventListener("click", () => {
+      const current = document.documentElement.dataset.theme || "dark";
+      setTheme(current === "dark" ? "light" : "dark");
+    });
+  }
 
   // AI insight refresh (now inside main panel above timeseries)
   node.querySelector(".aside-insight-refresh").addEventListener("click", () => {
@@ -428,17 +442,18 @@ function renderKpi(domain, data) {
   // === 4-col bottom row tables ===
   const ctNames = { "1": "MV", "2": "TV", "4": "BK", "5": "EP", "8": "WT", "10": "AM", "11": "AW" };
 
-  // TOP contents (모든 도메인)
+  // TOP contents (모든 도메인) — title 있으면 title, 없으면 content_id
   const top = data.top_contents || [];
   const maxEv = top.reduce((m, r) => Math.max(m, r.events), 0) || 1;
   root.querySelector(".top10-contents tbody").innerHTML = top.length
     ? top.map((row, i) => {
         const pct = (row.events / maxEv) * 100;
         const ct = (row.content || "").split(":")[0];
+        const label = row.title || row.content;
         return `
           <tr>
             <td class="t-rank">${i + 1}</td>
-            <td class="t-content"><span class="ctype-pill" data-ct="${escapeHtmlD(ct)}">${escapeHtmlD(ctNames[ct] || ct)}</span>${escapeHtmlD(row.content)}</td>
+            <td class="t-content"><span class="ctype-pill" data-ct="${escapeHtmlD(ct)}">${escapeHtmlD(ctNames[ct] || ct)}</span><span class="t-title">${escapeHtmlD(label)}</span></td>
             <td class="t-events"><div class="ev-cell"><div class="ev-bar-wrap"><div class="ev-bar" style="width:${pct.toFixed(1)}%"></div></div><span class="ev-num">${fmt.numFull(row.events)}</span></div></td>
           </tr>`;
       }).join("")
@@ -453,22 +468,23 @@ function renderKpi(domain, data) {
         return `
           <tr>
             <td class="t-rank">${i + 1}</td>
-            <td class="t-content">${escapeHtmlD(row.name)}</td>
+            <td class="t-content"><span class="t-title">${escapeHtmlD(row.name)}</span></td>
             <td class="t-events"><div class="ev-cell"><div class="ev-bar-wrap"><div class="ev-bar" style="width:${pct.toFixed(1)}%"></div></div><span class="ev-num">${fmt.numFull(row.events)}</span></div></td>
           </tr>`;
       }).join("")
     : `<tr><td colspan="3" style="color:var(--ink-faint); text-align:center; padding:14px">데이터 없음</td></tr>`;
 
-  // TOP revenue contents (ADULT)
+  // TOP revenue contents (ADULT) — title 있으면 title
   const revTop = data.top_revenue_contents || [];
   const maxRev = revTop.reduce((m, r) => Math.max(m, r.revenue), 0) || 1;
   root.querySelector(".top10-rev-contents tbody").innerHTML = revTop.length
     ? revTop.map((row, i) => {
         const pct = (row.revenue / maxRev) * 100;
+        const label = row.title || row.content;
         return `
           <tr>
             <td class="t-rank">${i + 1}</td>
-            <td class="t-content">${escapeHtmlD(row.content)}</td>
+            <td class="t-content"><span class="t-title">${escapeHtmlD(label)}</span></td>
             <td class="t-events"><div class="ev-cell"><div class="ev-bar-wrap"><div class="ev-bar" style="width:${pct.toFixed(1)}%"></div></div><span class="ev-num">₩${(row.revenue/10000).toFixed(0)}만</span></div></td>
           </tr>`;
       }).join("")
@@ -925,7 +941,7 @@ function drawMetaTop(root, domain, actors, directors) {
       return `
         <tr>
           <td class="t-rank">${i + 1}</td>
-          <td class="t-content">${escapeHtmlD(display)}</td>
+          <td class="t-content"><span class="t-title">${escapeHtmlD(display)}</span></td>
           <td class="t-events">
             <div class="ev-cell">
               <div class="ev-bar-wrap"><div class="ev-bar" style="width:${pct.toFixed(1)}%"></div></div>

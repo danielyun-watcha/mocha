@@ -205,7 +205,7 @@ function appendMessage(role, text, { rendered = false } = {}) {
 
   const avatar = document.createElement("div");
   avatar.className = `avatar ${role}`;
-  avatar.textContent = role === "assistant" ? "☕" : "나";
+  avatar.textContent = role === "assistant" ? "" : "나";
 
   const content = document.createElement("div");
   content.className = "msg-content";
@@ -567,14 +567,14 @@ els.newBtn.onclick = () => {
   const div = document.createElement("div");
   div.className = "welcome";
   div.innerHTML = `
-    <div class="welcome-logo">☕</div>
-    <h2>MOCHA</h2>
+    <span class="welcome-logo" role="img" aria-label="MOCHA"></span>
+    <h2>안녕! 난 MOCHA야</h2>
     <p>자연어로 Watcha 데이터에 대해 물어보세요.</p>
     <div class="examples">
-      <button class="example">graph_modeling 데이터 EDA 리포트 만들어줘</button>
-      <button class="example">큰손 유저는 누구야?</button>
-      <button class="example">장르 분석해줘</button>
-      <button class="example">노션에 올려줘</button>
+      <button class="example">🎬 Mars 최근 30일 인기 장르 차트로 보여줘</button>
+      <button class="example">💰 성인관 최다 결제 유저는?</button>
+      <button class="example">⭐ 피디아 평점 높은 영화 TOP 10</button>
+      <button class="example">🎥 왓챠 인기 감독 TOP 5 그래프로</button>
     </div>
   `;
   els.messages.appendChild(div);
@@ -619,4 +619,55 @@ document.addEventListener("click", (e) => {
   }
 });
 
+// === /archive 저장 버튼 ===
+const archiveBtn = document.getElementById("archive-btn");
+
+function updateArchiveBtn() {
+  if (!archiveBtn) return;
+  const hasMessages = document.querySelectorAll("#messages .msg-row").length > 0;
+  if (state.sessionId && hasMessages) {
+    archiveBtn.classList.add("visible");
+    archiveBtn.classList.remove("saved");
+    archiveBtn.disabled = false;
+    archiveBtn.textContent = "📦 /archive 에 저장";
+  } else {
+    archiveBtn.classList.remove("visible", "saved");
+  }
+}
+
+if (archiveBtn) {
+  archiveBtn.addEventListener("click", async () => {
+    if (!state.sessionId) return;
+    archiveBtn.disabled = true;
+    archiveBtn.textContent = "저장 중…";
+    try {
+      const r = await fetch(`/api/sessions/${state.sessionId}/archive`, {
+        method: "POST",
+      });
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({ detail: r.statusText }));
+        throw new Error(err.detail || `HTTP ${r.status}`);
+      }
+      const data = await r.json();
+      archiveBtn.classList.add("saved");
+      archiveBtn.textContent = `✓ 저장됨 (${data.messages}개 메시지)`;
+      archiveBtn.disabled = true;
+      console.log("[archive] saved →", data.path);
+    } catch (e) {
+      archiveBtn.disabled = false;
+      archiveBtn.textContent = "📦 /archive 에 저장";
+      alert("저장 실패: " + e.message);
+    }
+  });
+}
+
+// messages 컨테이너 변경 시 버튼 상태 자동 갱신
+const messagesEl = document.getElementById("messages");
+if (messagesEl) {
+  new MutationObserver(updateArchiveBtn).observe(messagesEl, {
+    childList: true, subtree: false,
+  });
+}
+
 fetchSessions();
+updateArchiveBtn();

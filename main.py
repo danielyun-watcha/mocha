@@ -14,48 +14,153 @@ import asyncpg
 import httpx
 from claude_agent_sdk import ClaudeAgentOptions, query
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 import kpi as kpi_mod
+import oauth_creds as _oauth_creds
+import prompts as _prompts
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(name)s | %(message)s",
-    stream=sys.stdout,
+# Logging: MOCHA_LOG_FORMAT=json 이면 structured JSON (CloudWatch/Loki 친화),
+# 기본은 사람-친화 plain text. correlation_id 는 LoggerAdapter 로 부여.
+import contextvars as _ctxvars
+
+_request_id_ctx: _ctxvars.ContextVar[str | None] = _ctxvars.ContextVar(
+    "mocha_request_id", default=None
 )
+_session_id_ctx: _ctxvars.ContextVar[int | None] = _ctxvars.ContextVar(
+    "mocha_session_id", default=None
+)
+
+
+class _JSONFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        payload: dict[str, Any] = {
+            "ts": self.formatTime(record, "%Y-%m-%dT%H:%M:%S"),
+            "lvl": record.levelname,
+            "name": record.name,
+            "msg": record.getMessage(),
+        }
+        rid = _request_id_ctx.get()
+        sid = _session_id_ctx.get()
+        if rid:
+            payload["request_id"] = rid
+        if sid is not None:
+            payload["session_id"] = sid
+        if record.exc_info:
+            payload["exc"] = self.formatException(record.exc_info)
+        return json.dumps(payload, ensure_ascii=False)
+
+
+class _TextFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        sid = _session_id_ctx.get()
+        rid = _request_id_ctx.get()
+        ctx = ""
+        if sid is not None or rid:
+            bits = []
+            if rid:
+                bits.append(f"req={rid}")
+            if sid is not None:
+                bits.append(f"sess={sid}")
+            ctx = " [" + " ".join(bits) + "]"
+        base = f"{self.formatTime(record, '%Y-%m-%d %H:%M:%S,%f')[:-3]} {record.levelname} {record.name}{ctx} | {record.getMessage()}"
+        if record.exc_info:
+            base += "\n" + self.formatException(record.exc_info)
+        return base
+
+
+_log_format = os.environ.get("MOCHA_LOG_FORMAT", "text").lower()
+_log_handler = logging.StreamHandler(sys.stdout)
+_log_handler.setFormatter(_JSONFormatter() if _log_format == "json" else _TextFormatter())
+logging.basicConfig(level=logging.INFO, handlers=[_log_handler], force=True)
 log = logging.getLogger("mocha")
 
 BASE_DIR = Path(__file__).parent
 PLUGIN_DIR = BASE_DIR / "plugins" / "eda"
 STATIC_DIR = BASE_DIR / "static"
-MIGRATION_FILE = BASE_DIR / "migrations" / "001_init.sql"
+MIGRATIONS_DIR = BASE_DIR / "migrations"
 
-PORT = int(os.environ.get("PORT", os.environ.get("DEV_PORT", 8080)))
-DATABASE_URL = os.environ["DATABASE_URL"]
-MODEL = os.environ.get("MOCHA_MODEL", "claude-sonnet-4-6")
+# ── Settings — all env-driven config in one place ───────────────────────────
+class _Settings:
+    """Single source of truth for env-driven config. Override via env vars."""
+    PORT: int = int(os.environ.get("PORT", os.environ.get("DEV_PORT", 8080)))
+    DATABASE_URL: str = os.environ["DATABASE_URL"]
+    MODEL: str = os.environ.get("MOCHA_MODEL", "claude-sonnet-4-6")
+    GATEWAY_MODEL: str = os.environ.get("MOCHA_GATEWAY_MODEL", "claude-haiku-4-5-20251001")
+    FAST_LEAD_MODEL: str = os.environ.get("MOCHA_FAST_LEAD_MODEL", "claude-haiku-4-5-20251001")
+    INSIGHT_MODEL: str = os.environ.get("MOCHA_INSIGHT_MODEL", "claude-haiku-4-5-20251001")
+    MAX_BUDGET_USD: float = float(os.environ.get("MOCHA_MAX_BUDGET_USD", "3.0"))
+    FAST_INLINE_MAX_DAYS: int = int(os.environ.get("MOCHA_FAST_INLINE_MAX_DAYS", "90"))
+    OAUTH_CRED_PATH: Path = Path(os.environ.get("CLAUDE_OAUTH_CRED", "/root/.claude/.credentials.json"))
+    AUTH_USER: str | None = os.environ.get("MOCHA_AUTH_USER")
+    AUTH_PASS: str | None = os.environ.get("MOCHA_AUTH_PASS")
+    SESSION_RETENTION_DAYS: int = int(os.environ.get("MOCHA_SESSION_RETENTION_DAYS", "7"))
+    CHART_RETENTION_HOURS: int = int(os.environ.get("MOCHA_CHART_RETENTION_HOURS", "24"))
+
+
+cfg = _Settings()
+# Backwards-compat aliases for existing code.
+PORT = cfg.PORT
+DATABASE_URL = cfg.DATABASE_URL
+MODEL = cfg.MODEL
 
 # OAuth: claude.ai team subscription 의 access token 으로 Anthropic API 직접 호출.
 # API key (sk-ant-api03-...) 와 다른 인증 — subscription quota 만 소모, 추가 과금 X.
-# subprocess CLI spawn overhead (~5-10s) 우회 → fast track 응답 5-8s 가능.
-_OAUTH_CRED_PATH = Path(os.environ.get("CLAUDE_OAUTH_CRED", "/root/.claude/.credentials.json"))
+# Pure file readers extracted → oauth_creds.py (P1 #5 partial split).
+_load_oauth_token = _oauth_creds.load_token
+_oauth_expiry_seconds = _oauth_creds.expiry_seconds
 
 
-def _load_oauth_token() -> str | None:
-    """Return current access token or None if missing/expired."""
+async def _oauth_refresh_via_cli() -> bool:
+    """Attempt to refresh token via `claude` CLI subprocess. Returns True on
+    success. Anthropic 의 refresh endpoint 는 공개 spec 없음 → CLI 에 위임."""
+    import asyncio
     try:
-        with open(_OAUTH_CRED_PATH) as f:
-            d = json.load(f)
-        oauth = d.get("claudeAiOauth", {})
-        token = oauth.get("accessToken")
-        expires_at = oauth.get("expiresAt", 0) / 1000.0  # ms → s
-        if not token or time.time() >= expires_at:
-            return None
-        return token
+        proc = await asyncio.create_subprocess_exec(
+            "claude", "--print", "/login",
+            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+            stdin=asyncio.subprocess.DEVNULL,
+        )
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=15.0)
+        except asyncio.TimeoutError:
+            proc.kill()
+            return False
+        return proc.returncode == 0
+    except FileNotFoundError:
+        return False
     except Exception:
-        log.exception("OAuth token load failed")
-        return None
+        log.exception("[oauth-refresh] CLI invocation failed")
+        return False
+
+
+async def _oauth_refresh_loop() -> None:
+    """Check OAuth expiry every 10min. If <15min left, attempt refresh.
+    Refresh endpoint is not publicly documented → best-effort CLI delegation.
+    Logs warning when expired so operator knows to run `claude /login`."""
+    import asyncio
+    while True:
+        try:
+            await asyncio.sleep(600)  # 10 minutes
+            secs = _oauth_expiry_seconds()
+            if secs is None:
+                continue
+            if secs < 0:
+                log.warning("[oauth] token EXPIRED %.0fs ago — run `claude /login`", -secs)
+            elif secs < 900:  # <15 min
+                log.warning("[oauth] token expires in %.0fs — attempting CLI refresh", secs)
+                ok = await _oauth_refresh_via_cli()
+                log.info("[oauth] refresh result: %s", "ok" if ok else "failed (manual login needed)")
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("[oauth-refresh-loop] failed")
+
+
+_OAUTH_BACKOFF_S = (1, 2, 4)  # exponential — max 3 attempts per model
+_HAIKU_FALLBACK = "claude-haiku-4-5-20251001"
 
 
 async def stream_oauth_completion(
@@ -64,10 +169,15 @@ async def stream_oauth_completion(
 ) -> AsyncIterator[tuple[str, str]]:
     """Stream Anthropic Messages via OAuth Bearer (team subscription quota).
 
+    history: optional [{role:"user|assistant", content:"..."}] for multi-turn.
     Yields ('text', delta) chunks and a final ('done', cost_json).
-    Falls back gracefully on auth/network errors via ('error', detail).
-    history: prior [{"role":"user"|"assistant","content":"..."}] messages for context.
+
+    Retry policy:
+      - 429 / 5xx: exponential backoff (1s,2s,4s), max 3 attempts on same model
+      - Sonnet 429 exhausted → fallback to Haiku (notify user via 'text' event)
+      - 4xx (non-429): immediate error, no retry
     """
+    import asyncio as _asyncio
     token = _load_oauth_token()
     if not token:
         yield ("error", "OAuth token unavailable or expired — claude /login 필요")
@@ -78,51 +188,96 @@ async def stream_oauth_completion(
         "content-type": "application/json",
         "accept": "text/event-stream",
     }
-    payload = {
-        "model": model,
-        "max_tokens": max_tokens,
-        "stream": True,
-        "system": system,
-        "messages": [*(history or []), {"role": "user", "content": user_msg}],
-    }
-    usage = {"input_tokens": 0, "output_tokens": 0}
-    try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            async with client.stream(
-                "POST", "https://api.anthropic.com/v1/messages",
-                headers=headers, json=payload,
-            ) as r:
-                if r.status_code != 200:
-                    body = await r.aread()
-                    yield ("error", f"HTTP {r.status_code}: {body.decode()[:300]}")
-                    return
-                async for line in r.aiter_lines():
-                    if not line or not line.startswith("data: "):
-                        continue
-                    try:
-                        evt = json.loads(line[6:])
-                    except json.JSONDecodeError:
-                        continue
-                    t = evt.get("type")
-                    if t == "content_block_delta":
-                        delta = evt.get("delta", {})
-                        if delta.get("type") == "text_delta":
-                            yield ("text", delta.get("text", ""))
-                    elif t == "message_delta":
-                        u = evt.get("usage") or {}
-                        for k in ("input_tokens", "output_tokens",
-                                  "cache_creation_input_tokens",
-                                  "cache_read_input_tokens"):
-                            if k in u:
-                                usage[k] = u[k]
-                    elif t == "message_start":
-                        u = (evt.get("message") or {}).get("usage") or {}
-                        for k, v in u.items():
-                            usage[k] = v
-        yield ("done", json.dumps(usage))
-    except Exception as e:
-        log.exception("OAuth streaming failed")
-        yield ("error", f"streaming error: {e}")
+    messages = list(history or []) + [{"role": "user", "content": user_msg}]
+    is_sonnet = "sonnet" in model.lower()
+    models_to_try: list[str] = [model] + ([_HAIKU_FALLBACK] if is_sonnet and model != _HAIKU_FALLBACK else [])
+
+    for try_idx, try_model in enumerate(models_to_try):
+        if try_idx > 0:
+            log.warning("[oauth] 429 exhausted on %s → fallback %s", model, try_model)
+            if _PROM_AVAILABLE:
+                try: OAUTH_FALLBACK.inc()
+                except Exception: pass
+            yield ("text", f"\n\n_⚠️ {model} rate-limit 한도 도달 → {try_model} 로 자동 fallback_\n\n")
+        payload = {
+            "model": try_model, "max_tokens": max_tokens, "stream": True,
+            "system": system, "messages": messages,
+        }
+
+        last_status: int | None = None
+        last_body: str = ""
+        for attempt, backoff_s in enumerate(_OAUTH_BACKOFF_S):
+            usage = {"input_tokens": 0, "output_tokens": 0}
+            try:
+                async with httpx.AsyncClient(timeout=60.0) as client:
+                    async with client.stream(
+                        "POST", "https://api.anthropic.com/v1/messages",
+                        headers=headers, json=payload,
+                    ) as r:
+                        if r.status_code != 200:
+                            body_bytes = await r.aread()
+                            last_status = r.status_code
+                            last_body = body_bytes.decode(errors="replace")[:300]
+                            retryable = r.status_code == 429 or 500 <= r.status_code < 600
+                            if not retryable:
+                                yield ("error", f"HTTP {r.status_code}: {last_body}")
+                                return
+                            # retryable: log + sleep then retry (unless last attempt)
+                            log.warning(
+                                "[oauth] %s try %d/%d HTTP %d, sleep %ds",
+                                try_model, attempt + 1, len(_OAUTH_BACKOFF_S),
+                                r.status_code, backoff_s,
+                            )
+                            if r.status_code == 429 and _PROM_AVAILABLE:
+                                try: OAUTH_429.labels(model=try_model).inc()
+                                except Exception: pass
+                            if attempt < len(_OAUTH_BACKOFF_S) - 1:
+                                await _asyncio.sleep(backoff_s)
+                                continue
+                            break  # exhausted, try fallback model if any
+                        # 200 OK — stream
+                        async for line in r.aiter_lines():
+                            if not line or not line.startswith("data: "):
+                                continue
+                            try:
+                                evt = json.loads(line[6:])
+                            except json.JSONDecodeError:
+                                continue
+                            t = evt.get("type")
+                            if t == "content_block_delta":
+                                delta = evt.get("delta", {})
+                                if delta.get("type") == "text_delta":
+                                    yield ("text", delta.get("text", ""))
+                            elif t == "message_delta":
+                                u = evt.get("usage") or {}
+                                for k in ("input_tokens", "output_tokens",
+                                          "cache_creation_input_tokens",
+                                          "cache_read_input_tokens"):
+                                    if k in u:
+                                        usage[k] = u[k]
+                            elif t == "message_start":
+                                u = (evt.get("message") or {}).get("usage") or {}
+                                for k, v in u.items():
+                                    usage[k] = v
+                yield ("done", json.dumps(usage))
+                return
+            except (httpx.TimeoutException, httpx.NetworkError) as e:
+                last_status = None
+                last_body = str(e)
+                log.warning("[oauth] %s try %d/%d network: %s", try_model,
+                            attempt + 1, len(_OAUTH_BACKOFF_S), e)
+                if attempt < len(_OAUTH_BACKOFF_S) - 1:
+                    await _asyncio.sleep(backoff_s)
+                    continue
+                break
+            except Exception as e:
+                log.exception("OAuth streaming failed")
+                yield ("error", f"streaming error: {e}")
+                return
+        # exhausted this model — loop tries next (fallback) if any
+
+    yield ("error",
+           f"rate-limited / unavailable after retries: HTTP {last_status} {last_body}")
 
 # 세션당 USD 캡 — 풀 EDA 1회 실측 ~$1.6, 2배 헤드룸으로 $3.
 # 폭주(무한 루프 등) 가드. 초과 시 ResultMessage(subtype="error_max_budget_usd").
@@ -301,7 +456,7 @@ def build_system_prompt(domain: str = "unknown") -> str:
 db_pool: asyncpg.Pool | None = None
 
 
-async def _hydrate_kpi_cache_from_db():
+async def _hydrate_kpi_cache_from_db() -> None:
     """서버 startup 시 호출: DB 의 KPI summary/series 캐시를 in-memory 로 로드.
 
     Staleness: 같은 KST date 안에 만들어진 row 만 fresh (사용자 명시 — 데이터는
@@ -339,7 +494,10 @@ async def _hydrate_kpi_cache_from_db():
     return n
 
 
-async def _persist_kpi_cache(domain, start_d, end_d, cts_str, summary, series):
+async def _persist_kpi_cache(
+    domain: str, start_d: Any, end_d: Any, cts_str: str,
+    summary: dict, series: dict,
+) -> None:
     async with db_pool.acquire() as conn:
         await conn.execute(
             "INSERT INTO kpi_summary_cache(domain, start_date, end_date, content_types, "
@@ -399,7 +557,7 @@ async def _lazy_prewarm_filters(domain: str, start_d, end_d) -> None:
         )
 
 
-async def _long_prewarm_subprocess():
+async def _long_prewarm_subprocess() -> None:
     """30-day fast-inline KPI prewarm — each domain in its own subprocess.
 
     main asyncio loop stays responsive (no GIL). After child exits, read
@@ -480,7 +638,7 @@ def _hydrate_cache_row(domain: str, start_d, end_d, row) -> None:
         log.exception(f"hydrate failed for {domain} {start_d}~{end_d}")
 
 
-async def prewarm_dashboards():
+async def prewarm_dashboards() -> None:
     """Startup background task — DB hit 면 skip, miss 면 계산 + DB upsert.
 
     데이터가 하루 1회 갱신되니까 같은 KST date 안에 이미 계산된 row 가 있으면
@@ -559,12 +717,36 @@ async def lifespan(app: FastAPI):
     global db_pool
     import asyncio
     log.info("Connecting to PostgreSQL")
-    db_pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=10)
+    db_pool = await asyncpg.create_pool(
+        DATABASE_URL, min_size=2, max_size=20, timeout=5.0,
+        command_timeout=30.0,
+    )
+    # Apply migrations 순차적 — schema_migrations 테이블이 version 추적.
+    # 새 .sql 파일을 migrations/ 에 NNN_name.sql (3자리 번호) 형식으로 추가만 하면 됨.
     async with db_pool.acquire() as conn:
-        await conn.execute(MIGRATION_FILE.read_text())
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS schema_migrations (
+                version TEXT PRIMARY KEY,
+                applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        applied = 0
+        for sql_file in sorted(MIGRATIONS_DIR.glob("[0-9]*.sql")):
+            version = sql_file.stem  # e.g. "001_init"
+            row = await conn.fetchrow(
+                "SELECT 1 FROM schema_migrations WHERE version=$1", version
+            )
+            if row:
+                continue
+            log.info("[migrate] applying %s", version)
+            await conn.execute(sql_file.read_text())
+            await conn.execute(
+                "INSERT INTO schema_migrations(version) VALUES($1)", version
+            )
+            applied += 1
     log.info(
-        "Migrations applied. Listening on :%d (model=%s, max_budget=$%.2f)",
-        PORT, MODEL, MAX_BUDGET_USD,
+        "Migrations: %d new applied. Listening on :%d (model=%s, max_budget=$%.2f)",
+        applied, PORT, MODEL, MAX_BUDGET_USD,
     )
 
     # Hydrate in-memory KPI cache from DB (skip if today's row already exists)
@@ -573,30 +755,181 @@ async def lifespan(app: FastAPI):
     except Exception:
         log.exception("[hydrate] failed (continuing anyway)")
 
+    # Pre-warm matplotlib (Korean font registration is ~3-5s cold) so first
+    # chart in a chat answer is fast.
+    try:
+        _chart_setup()
+        log.info("[startup] matplotlib pre-warmed")
+    except Exception:
+        log.exception("[startup] matplotlib pre-warm failed (continuing)")
+
     # Background prewarm — DB cache hit if today's row present, else compute
     prewarm_task = asyncio.create_task(prewarm_dashboards())
+
+    # Periodic cleanup: old session messages + stale chart files
+    cleanup_task = asyncio.create_task(_periodic_cleanup())
+
+    # Daily prewarm cron — KST 04:00 마다 모든 도메인 prewarm 재실행
+    # (24h+ 동작 시 cache stale 방지)
+    daily_prewarm_task = asyncio.create_task(_daily_prewarm_loop())
+
+    # OAuth token refresh monitor — 만료 임박 시 자동 갱신 (CLI 위임)
+    oauth_refresh_task = asyncio.create_task(_oauth_refresh_loop())
 
     yield
 
     log.info("Shutting down")
     prewarm_task.cancel()
+    cleanup_task.cancel()
+    daily_prewarm_task.cancel()
+    oauth_refresh_task.cancel()
     await db_pool.close()
+
+
+async def _daily_prewarm_loop() -> None:
+    """Sleep until next KST 04:00 then run prewarm_dashboards(). Repeats forever."""
+    import asyncio
+    from datetime import datetime, timezone, timedelta
+    KST = timezone(timedelta(hours=9))
+    while True:
+        try:
+            now = datetime.now(KST)
+            next_run = now.replace(hour=4, minute=0, second=0, microsecond=0)
+            if next_run <= now:
+                next_run += timedelta(days=1)
+            delay = (next_run - now).total_seconds()
+            log.info("[daily-prewarm] sleeping %.0fs until %s KST", delay, next_run.isoformat())
+            await asyncio.sleep(delay)
+            log.info("[daily-prewarm] firing scheduled prewarm")
+            await prewarm_dashboards()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("[daily-prewarm] failed (sleeping 1h then retry)")
+            await asyncio.sleep(3600)
+
+
+async def _periodic_cleanup() -> None:
+    """Hourly cleanup: chat sessions >7d, /tmp/eda/sess_* >24h."""
+    import asyncio, shutil
+    from datetime import datetime, timezone, timedelta
+    while True:
+        try:
+            await asyncio.sleep(60)  # initial delay
+            # 1) DB: sessions >7d old → delete (cascade messages)
+            cutoff = datetime.now(timezone.utc) - timedelta(days=7)
+            async with db_pool.acquire() as conn:
+                deleted = await conn.fetchval(
+                    "WITH d AS (DELETE FROM sessions WHERE updated_at < $1 RETURNING id) "
+                    "SELECT count(*) FROM d", cutoff,
+                )
+            if deleted:
+                log.info(f"[cleanup] deleted {deleted} old sessions (>7d)")
+            # 2) /tmp/eda/sess_* dirs >24h
+            cutoff_ts = time.time() - 86400
+            removed = 0
+            for d in EDA_DIR.glob("sess_*"):
+                try:
+                    if d.is_dir() and d.stat().st_mtime < cutoff_ts:
+                        shutil.rmtree(d)
+                        removed += 1
+                except Exception:
+                    pass
+            if removed:
+                log.info(f"[cleanup] removed {removed} old sess_* dirs (>24h)")
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("[cleanup] iteration failed")
+        await asyncio.sleep(3600)  # then every hour
 
 
 app = FastAPI(lifespan=lifespan, title="MOCHA")
 
 
 @app.middleware("http")
-async def add_no_cache_headers(request, call_next):
-    """Force browsers to re-fetch static assets on every load — avoids
-    the 'site looks unchanged after restart' issue from stale JS/CSS."""
-    response = await call_next(request)
+async def correlation_and_cache(request, call_next):
+    """request_id ContextVar 부여 + Prometheus duration + 정적 자산 no-cache."""
+    import uuid as _uuid
+    rid = request.headers.get("x-request-id") or _uuid.uuid4().hex[:12]
+    token = _request_id_ctx.set(rid)
+    t0 = time.time()
+    try:
+        response = await call_next(request)
+    finally:
+        _request_id_ctx.reset(token)
+    response.headers["x-request-id"] = rid
     path = request.url.path
     if path == "/" or path.startswith("/static/"):
         response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
         response.headers["Pragma"] = "no-cache"
         response.headers["Expires"] = "0"
+    # Prometheus: path template 으로 cardinality 제한 (raw path 쓰면 폭증)
+    if _PROM_AVAILABLE and path != "/metrics":
+        route = getattr(request.scope.get("route"), "path", path)
+        try:
+            REQ_DURATION.labels(
+                method=request.method, path_template=route,
+                status=str(response.status_code),
+            ).observe(time.time() - t0)
+        except Exception:
+            pass
     return response
+
+
+# Basic auth — public tunnel 보안.
+# 우선순위:
+#   1) MOCHA_AUTH_DISABLED=1  → off (dev/local 명시적 opt-out)
+#   2) MOCHA_AUTH_USER+PASS 설정 → 그 값 사용
+#   3) 아무것도 없음 → 자동 생성 user=mocha, pass=random_8 — server log 에 출력
+_AUTH_DISABLED = os.environ.get("MOCHA_AUTH_DISABLED", "0") == "1"
+_AUTH_USER = os.environ.get("MOCHA_AUTH_USER")
+_AUTH_PASS = os.environ.get("MOCHA_AUTH_PASS")
+if not _AUTH_DISABLED:
+    import base64
+    import secrets as _secrets
+    from fastapi.responses import Response
+
+    if not _AUTH_USER:
+        _AUTH_USER = "mocha"
+    if not _AUTH_PASS:
+        _AUTH_PASS = _secrets.token_urlsafe(6)  # ~8 chars
+        log.warning(
+            "\n%s\n[AUTH] auto-generated credentials (env not set):\n"
+            "       user: %s\n       pass: %s\n"
+            "       set MOCHA_AUTH_DISABLED=1 to disable (NOT recommended for tunnels).\n%s",
+            "=" * 60, _AUTH_USER, _AUTH_PASS, "=" * 60,
+        )
+    else:
+        log.info("[auth] basic auth enabled for user=%s (env)", _AUTH_USER)
+
+    _EXPECTED = "Basic " + base64.b64encode(f"{_AUTH_USER}:{_AUTH_PASS}".encode()).decode()
+
+    # 보호 대상: chatbot 관련 경로만. KPI dashboard 는 open.
+    # - /api/sessions, /api/sessions/*  (세션 CRUD, 채팅, 내보내기 모두)
+    # - /api/usage  (token 사용량 — 운영 정보)
+    _PROTECTED_PREFIXES = ("/api/sessions", "/api/usage")
+
+    @app.middleware("http")
+    async def basic_auth(request, call_next):
+        path = request.url.path
+        # open: /, /static, /health, /api/kpi/*, /metrics, /eda-files
+        needs_auth = any(path == p or path.startswith(p + "/") or path == p
+                         for p in _PROTECTED_PREFIXES) or \
+                     path.startswith("/api/sessions")
+        if not needs_auth:
+            return await call_next(request)
+        auth = request.headers.get("authorization", "")
+        if not _secrets.compare_digest(auth, _EXPECTED):
+            return Response(
+                content="auth required",
+                status_code=401,
+                headers={"WWW-Authenticate": 'Basic realm="MOCHA Chatbot"'},
+            )
+        return await call_next(request)
+    log.info("[auth] protecting chatbot routes only (KPI dashboard is open)")
+else:
+    log.warning("[auth] DISABLED via MOCHA_AUTH_DISABLED=1 — site is OPEN")
 
 
 @app.get("/health")
@@ -604,8 +937,107 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+# ── Prometheus metrics ─────────────────────────────────────────────
+try:
+    from prometheus_client import Counter as _PromCounter
+    from prometheus_client import Histogram as _PromHistogram
+    from prometheus_client import generate_latest as _prom_dump
+    from prometheus_client import CONTENT_TYPE_LATEST as _PROM_CT
+    _PROM_AVAILABLE = True
+
+    REQ_DURATION = _PromHistogram(
+        "mocha_request_duration_seconds",
+        "HTTP request duration",
+        ["method", "path_template", "status"],
+        buckets=(0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 25, 60),
+    )
+    OAUTH_429 = _PromCounter(
+        "mocha_oauth_429_total", "OAuth 429 responses", ["model"]
+    )
+    OAUTH_FALLBACK = _PromCounter(
+        "mocha_oauth_fallback_total",
+        "OAuth model fallback events (Sonnet → Haiku)",
+    )
+    CHART_CACHE_HIT = _PromCounter(
+        "mocha_chart_cache_total", "Chart PNG cache outcomes", ["outcome"]
+    )
+except ImportError:
+    _PROM_AVAILABLE = False
+    log.warning("[metrics] prometheus_client not installed — /metrics disabled")
+
+
+@app.get("/metrics")
+async def metrics() -> Response:
+    """Prometheus text-format metrics."""
+    if not _PROM_AVAILABLE:
+        return Response("prometheus_client not installed", status_code=503)
+    return Response(_prom_dump(), media_type=_PROM_CT)
+
+
+async def _record_token_usage(model: str, usage: dict) -> None:
+    """Upsert daily token totals — (date, model) 기준 누적."""
+    if not db_pool:
+        return
+    from datetime import date as _date
+    today = _date.today()
+    input_t = int(usage.get("input_tokens", 0))
+    output_t = int(usage.get("output_tokens", 0))
+    cache_read = int(usage.get("cache_read_input_tokens", 0))
+    cache_creation = int(usage.get("cache_creation_input_tokens", 0))
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO token_usage_daily(date, model, input_tokens, output_tokens,
+                                          cache_read, cache_creation, request_count)
+            VALUES($1, $2, $3, $4, $5, $6, 1)
+            ON CONFLICT (date, model) DO UPDATE SET
+                input_tokens   = token_usage_daily.input_tokens + EXCLUDED.input_tokens,
+                output_tokens  = token_usage_daily.output_tokens + EXCLUDED.output_tokens,
+                cache_read     = token_usage_daily.cache_read + EXCLUDED.cache_read,
+                cache_creation = token_usage_daily.cache_creation + EXCLUDED.cache_creation,
+                request_count  = token_usage_daily.request_count + 1,
+                updated_at     = NOW()
+            """,
+            today, model, input_t, output_t, cache_read, cache_creation,
+        )
+
+
+@app.get("/api/usage")
+async def usage_summary(days: int = 7) -> dict:
+    """최근 N일 token 사용량 합계 (date 단위 + model 단위)."""
+    if not db_pool:
+        return {"days": days, "rows": []}
+    days = max(1, min(int(days), 90))
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT date, model, input_tokens, output_tokens,
+                   cache_read, cache_creation, request_count
+            FROM token_usage_daily
+            WHERE date >= CURRENT_DATE - $1::int
+            ORDER BY date DESC, model
+            """,
+            days - 1,
+        )
+    return {
+        "days": days,
+        "rows": [
+            {
+                "date": str(r["date"]),
+                "model": r["model"],
+                "input": int(r["input_tokens"]),
+                "output": int(r["output_tokens"]),
+                "cache_read": int(r["cache_read"]),
+                "cache_creation": int(r["cache_creation"]),
+                "requests": int(r["request_count"]),
+            }
+            for r in rows
+        ],
+    }
+
+
 @app.get("/debug")
-async def debug_page():
+async def debug_page() -> StreamingResponse:
     """Browser-side debug page — no JS, no CSS, just raw status of mocha.
 
     DevTools 없이도 사이트가 정상인지 확인 가능. 모든 KPI / insights
@@ -654,10 +1086,12 @@ async def root() -> StreamingResponse:
     html = html.replace("/static/notion.css", f"/static/notion.css?v={_asset_v()}")
     html = html.replace("/static/dashboard.js", f"/static/dashboard.js?v={_asset_v()}")
     html = html.replace("/static/app.js", f"/static/app.js?v={_asset_v()}")
+    html = html.replace("/static/i18n.js", f"/static/i18n.js?v={_asset_v()}")
     # mascot images now loaded via CSS background-image — no HTML rewrite needed.
     # (kept as no-op for safety if old <img> tags reappear)
     html = html.replace("/static/mascot.png\"", f"/static/mascot.png?v={_asset_v()}\"")
     html = html.replace("/static/mascot-icon.png\"", f"/static/mascot-icon.png?v={_asset_v()}\"")
+    html = html.replace("/static/mocha-avatar.png\"", f"/static/mocha-avatar.png?v={_asset_v()}\"")
     return StreamingResponse(
         iter([html]),
         media_type="text/html",
@@ -672,6 +1106,110 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 EDA_DIR = Path("/tmp/eda")
 EDA_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/eda-files", StaticFiles(directory=EDA_DIR), name="eda-files")
+
+
+# Chart PNG path cache: (domain, period_start, period_end, chart_name) → path.
+# 같은 요청 반복 시 PNG 재생성 X (matplotlib 0.3-1s 절약).
+# cleanup_eda_files() 가 PNG 삭제하면 다음 access 시 자동 invalidate (파일 존재 확인).
+_CHART_CACHE: dict[tuple[str, str, str, str], str] = {}
+_CHART_CACHE_MAX = 500  # 500개 entry 까지 — 도메인×기간×차트별 ~20개씩 보관 가능
+
+_CHART_PALETTE = ["#d97757", "#5b8dee", "#4dd3c1", "#ec5b8e"]
+_CHART_RC = {
+    "axes.unicode_minus": False,
+    "figure.facecolor": "white", "axes.facecolor": "white",
+    "savefig.facecolor": "white", "savefig.dpi": 160, "savefig.bbox": "tight",
+    "axes.titlesize": 14, "axes.titleweight": "bold", "axes.titlelocation": "left",
+    "axes.labelcolor": "#555", "xtick.color": "#555", "ytick.color": "#555",
+    "axes.edgecolor": "#bbb", "axes.linewidth": 0.8,
+}
+
+
+def _chart_setup() -> Any:
+    """matplotlib + Korean font + common rcParams. Returns plt module."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import matplotlib.font_manager as fm
+    for p in ("/usr/share/fonts/truetype/nanum/NanumGothic.ttf",
+              str(BASE_DIR / "plugins/eda/skills/eda-figures/assets/fonts/malgun.ttf")):
+        if Path(p).exists():
+            fm.fontManager.addfont(p)
+            plt.rcParams["font.family"] = fm.FontProperties(fname=p).get_name()
+            break
+    plt.rcParams.update(_CHART_RC)
+    return plt
+
+
+def _chart_save(fig, session_id: int, name: str) -> str:
+    """Save figure to /tmp/eda/sess_<id>/<name>.png, return embed path."""
+    out_dir = EDA_DIR / f"sess_{session_id}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / f"{name}.png"
+    import matplotlib.pyplot as plt
+    plt.tight_layout()
+    fig.savefig(out_path)
+    plt.close(fig)
+    return f"/eda-files/sess_{session_id}/{name}.png"
+
+
+def _auto_bar_chart(items: list[dict], label_key: str, value_key: str,
+                    title: str, session_id: int, name: str) -> str | None:
+    """Top-N horizontal bar PNG (highlight top 3)."""
+    if not items:
+        return None
+    try:
+        plt = _chart_setup()
+        items = items[:10]
+        labels = [str(it.get(label_key, ""))[:30] for it in items]
+        values = [float(it.get(value_key, 0)) for it in items]
+        if not values or max(values) <= 0:
+            return None
+        fig, ax = plt.subplots(figsize=(9, max(3, len(items) * 0.45)))
+        colors = ["#d97757" if i < 3 else "#D8D5CC" for i in range(len(items))]
+        bars = ax.barh(range(len(items)), values, color=colors, edgecolor="none")
+        ax.set_yticks(range(len(items))); ax.set_yticklabels(labels); ax.invert_yaxis()
+        ax.spines["top"].set_visible(False); ax.spines["right"].set_visible(False)
+        ax.grid(False)
+        vmax = max(values) or 1
+        for bar, v in zip(bars, values):
+            ax.text(bar.get_width() + vmax * 0.01, bar.get_y() + bar.get_height() / 2,
+                    f"{int(v):,}" if v == int(v) else f"{v:.2f}",
+                    va="center", fontsize=10, color="#333")
+        ax.set_xlim(0, vmax * 1.15)
+        ax.set_title(title, color="#1a1a1a", loc="left", pad=15)
+        return _chart_save(fig, session_id, name)
+    except Exception:
+        log.exception("bar chart failed")
+        return None
+
+
+def _auto_line_chart(timeseries: list[dict], y_keys: list[str],
+                     title: str, session_id: int, name: str) -> str | None:
+    """Daily timeseries line PNG."""
+    if not timeseries or not y_keys:
+        return None
+    try:
+        plt = _chart_setup()
+        dates = [r.get("date", "") for r in timeseries]
+        fig, ax = plt.subplots(figsize=(9, 4))
+        for i, yk in enumerate(y_keys):
+            ys = [float(r.get(yk, 0)) for r in timeseries]
+            ax.plot(dates, ys, marker="o", linewidth=2,
+                    color=_CHART_PALETTE[i % len(_CHART_PALETTE)], label=yk)
+            for x_i, y_i in zip(dates, ys):
+                ax.text(x_i, y_i, f"{int(y_i):,}", ha="center", va="bottom",
+                        fontsize=9, color="#333")
+        ax.spines["top"].set_visible(False); ax.spines["right"].set_visible(False)
+        ax.grid(False)
+        ax.set_title(title, color="#1a1a1a", loc="left", pad=15)
+        if len(y_keys) > 1:
+            ax.legend(loc="upper left", frameon=False)
+        plt.xticks(rotation=30, ha="right")
+        return _chart_save(fig, session_id, name)
+    except Exception:
+        log.exception("line chart failed")
+        return None
 
 
 class SessionCreate(BaseModel):
@@ -715,10 +1253,11 @@ async def kpi_summary(
     cts = [c for c in (content_types or "").split(",") if c] or None
     ats = [a for a in (action_types or "").split(",") if a] or None
     result = kpi_mod.summary(domain, start_d, end_d, content_types=cts, action_types=ats)
-    # Background: 같은 (domain, start, end) 의 단일 필터 조합을 미리 채워둠.
-    # 사용자가 다음 체크박스 클릭 시 즉시 hit.
-    import asyncio as _asyncio
-    _asyncio.create_task(_lazy_prewarm_filters(domain, start_d, end_d))
+    # Lazy filter prewarm: 데모 안정 우선으로 비활성화 (CPU 126% 점유 → 페이지
+    # 로딩 느려짐). 필터 클릭 시 첫 한 번만 ~30s 계산, 이후 캐시 hit.
+    # 다시 켜려면 아래 두 줄 주석 해제.
+    # import asyncio as _asyncio
+    # _asyncio.create_task(_lazy_prewarm_filters(domain, start_d, end_d))
     return result
 
 
@@ -754,14 +1293,7 @@ async def kpi_series(
 
 # ── AI insights ─────────────────────────────────────────────────
 
-INSIGHT_SYSTEM_PROMPT = """Watcha data analyst. KO output. JSON only.
-
-Pick 3-5 angles from: trend (delta%), spike, KPI relation, biz meaning.
-Each bullet = **one short Korean sentence** (≤80 chars). **bold** key numbers.
-No fabricated facts. No prose/code fences.
-
-Format: {"bullets":["...","...","..."]}
-"""
+# Insight prompt → prompts/insight.tmpl (편집 시 자동 재로드)
 
 
 INSIGHT_MODEL = os.environ.get("MOCHA_INSIGHT_MODEL", "claude-haiku-4-5-20251001")
@@ -811,7 +1343,7 @@ async def _generate_insights(domain: str, start_d, end_d, cts: list[str] | None)
 
     options = ClaudeAgentOptions(
         model=INSIGHT_MODEL,
-        system_prompt=INSIGHT_SYSTEM_PROMPT,
+        system_prompt=_prompts.render("insight"),
         max_turns=1,
         permission_mode="bypassPermissions",
     )
@@ -841,7 +1373,39 @@ async def _generate_insights(domain: str, start_d, end_d, cts: list[str] | None)
     bullets = parsed.get("bullets", [])
     if not isinstance(bullets, list):
         bullets = []
-    return {"bullets": [str(b) for b in bullets[:8]]}
+    bullets = [str(b) for b in bullets[:8]]
+    # Lightweight self-critique: 중복 phrase / 빈 인사이트 / 같은 문구 반복 제거
+    bullets = _filter_insights(bullets)
+    return {"bullets": bullets}
+
+
+# 반복되는 cliché — 사용자 피드백 ("같은 phrase 반복 금지") 기반
+_CLICHE_PATTERNS = ("압도적 1위", "압도적인 1위", "독보적", "단연")
+
+
+def _filter_insights(bullets: list[str]) -> list[str]:
+    """Drop empty / duplicate / cliché-heavy bullets. Keep up to 4."""
+    seen: set[str] = set()
+    filtered: list[str] = []
+    cliche_count = 0
+    for b in bullets:
+        b = b.strip()
+        if not b or len(b) < 10:
+            continue
+        # 같은 첫 15자 시작은 중복 간주
+        key = b[:15]
+        if key in seen:
+            continue
+        seen.add(key)
+        # cliche 는 최대 1개만 허용
+        if any(p in b for p in _CLICHE_PATTERNS):
+            cliche_count += 1
+            if cliche_count > 1:
+                continue
+        filtered.append(b)
+        if len(filtered) >= 4:
+            break
+    return filtered
 
 
 @app.get("/api/kpi/{domain}/insights")
@@ -946,23 +1510,7 @@ async def get_messages(session_id: int) -> list[dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
-GATEWAY_SYSTEM_PROMPT = """JSON only. `{...}`. No prose/fences.
-
-Schema:
-{"track":"fast|slow","intent":"narrow_top_n|narrow_distribution|narrow_count|interpretive_qa|broad_eda|ab_test|report|notion|small_talk","domain":"ml_1m|watcha_main|adult|pedia|unknown","summary":"<KO 1-line>"}
-
-Intent:
-- narrow_count: 1 scalar (얼마/몇/평균/총합/DAU/CVR).
-- narrow_top_n: rank/list (TOP/탑/인기/큰손).
-- narrow_distribution: dist/trend (분포/추이/일별/시간대).
-- interpretive_qa: why/how/diff (왜/이유/차이).
-- broad_eda: multi-metric overview.
-- ab_test, report, notion, small_talk: as named.
-
-Track: narrow_*/interpretive_qa/notion/small_talk→fast. broad_eda/ab_test/report→slow. ambiguous→slow.
-
-Domain: ml-1m/movielens→ml_1m. 왓챠/mars/시청/rental/구매/graph_modeling/next_watch/user_bert→watcha_main. 성인/adult/NSFW/rec_adult→adult. 피디아/갤럭시/galaxy/별점/보싶→pedia. else→unknown.
-"""
+# Gateway prompt → prompts/gateway.tmpl
 
 
 GATEWAY_MODEL = os.environ.get("MOCHA_GATEWAY_MODEL", "claude-haiku-4-5-20251001")
@@ -993,7 +1541,14 @@ _INTENT_KW = [
     ("small_talk",          ["안녕", "도와줘", "뭐 할 수 있어"]),
 ]
 _FAST_INTENTS = {"narrow_top_n", "narrow_distribution", "narrow_count",
-                 "interpretive_qa", "notion", "small_talk"}
+                 "interpretive_qa", "notion", "small_talk",
+                 # broad_eda 도 fast 로 — KPI inline 풍부함으로 처리.
+                 # slow track 은 Sonnet rate-limit + subprocess hang 위험 → 발표 안정성 우선.
+                 "broad_eda"}
+
+# 시각화 요청 keywords — fast track 으로 분류돼도 강제로 slow 로 escalate
+# (chart 생성은 Bash + matplotlib 필요 → fast 의 allowed_tools=[] 로는 불가).
+_VIZ_KW = ["시각화", "차트", "그래프", "plot", "visualize", "chart", "그려"]
 
 
 def _extract_period_days(question: str) -> int | None:
@@ -1034,9 +1589,13 @@ def _classify_local(question: str) -> dict[str, Any] | None:
             break
     if intent is None:
         return None  # fallback to LLM gateway
+    needs_viz = any(k in q for k in _VIZ_KW)
+    # Charts now auto-generated in backend (fast track) — viz query stays fast.
     track = "fast" if intent in _FAST_INTENTS else "slow"
     result = {"track": track, "intent": intent, "domain": domain,
               "summary": question.strip()[:80]}
+    if needs_viz:
+        result["needs_viz"] = True
     period = _extract_period_days(question)
     if period:
         result["period_days"] = period
@@ -1056,7 +1615,7 @@ async def gateway_classify(question: str) -> dict[str, Any]:
     # 2) LLM fallback — 모호한 질문만
     options = ClaudeAgentOptions(
         model=GATEWAY_MODEL,
-        system_prompt=GATEWAY_SYSTEM_PROMPT,
+        system_prompt=_prompts.render("gateway"),
         max_turns=1,
         permission_mode="bypassPermissions",
     )
@@ -1093,13 +1652,14 @@ async def gateway_classify(question: str) -> dict[str, Any]:
 
 
 async def _stream_response(session_id: int, message: str) -> AsyncIterator[str]:
+    _session_id_ctx.set(session_id)
     async with db_pool.acquire() as conn:
         sess = await conn.fetchrow(
             "SELECT id, sdk_session_id FROM sessions WHERE id=$1",
             session_id,
         )
         if not sess:
-            yield _sse("error", {"error": "session not found"})
+            yield _sse_error("session_not_found", "session not found")
             return
 
         await conn.execute(
@@ -1139,9 +1699,11 @@ async def _stream_response(session_id: int, message: str) -> AsyncIterator[str]:
     system_prompt = build_system_prompt(domain)
 
     # Gateway hint passed to Lead (telegraphic — internal logic, output stays Korean)
+    viz_note = "  VIZ_REQUIRED: matplotlib chart inline (PNG → /tmp/eda/.../*.png → ![](path)).\n" if classification.get("needs_viz") else ""
     track_hint = (
         f"\n## Gateway: track={classification['track']} "
         f"intent={classification['intent']} q={classification.get('summary', '')}\n"
+        f"{viz_note}"
     )
     # fast 는 단순 통계 + 시각화 1-2장 (Bash 1 + 답변) → 12 turn.
     # slow 는 broad/A/B test (Bash 5-8 + figures + report) → 30 turn.
@@ -1157,7 +1719,7 @@ async def _stream_response(session_id: int, message: str) -> AsyncIterator[str]:
     # KPI summary 동기 fetch 시간이 기간에 비례.
     # 30일 cap — galaxy 30일 ~30-40s (cold), prewarm 후 즉시. 90일 prewarm 은 5분+ 비용 큼.
     # 더 긴 기간은 시스템 프롬프트에 "대시보드/BigQuery 권장" 안내.
-    FAST_INLINE_MAX_DAYS = 30
+    FAST_INLINE_MAX_DAYS = 90
     if is_fast and domain in ("galaxy", "mars", "adult"):
         try:
             from datetime import date as _date, timedelta
@@ -1171,8 +1733,9 @@ async def _stream_response(session_id: int, message: str) -> AsyncIterator[str]:
             import asyncio as _asyncio
             kpi_full = await _asyncio.to_thread(kpi_mod.summary, domain, start_d, end_d, None, None)
             log.info(f"[fast-inline] {domain} {start_d}~{end_d} ({actual_days}d) fetched in {time.time()-t_fetch:.1f}s")
-            # 큰 시계열 / 메타 필드 제거 (top-N + 핵심 KPI + files_read 만 남김)
-            DROP = {"timeseries", "hourly_activity", "pareto_curve",
+            # 큰 시계열 / 메타 필드 제거 (top-N + 핵심 KPI + files_read + timeseries 만 남김)
+            # timeseries 는 추이/distribution 질문 답변에 필수 → inline 유지.
+            DROP = {"hourly_activity", "pareto_curve",
                     "rating_distribution", "available_content_types",
                     "available_action_types", "supports",
                     "content_types", "action_types"}
@@ -1202,60 +1765,144 @@ async def _stream_response(session_id: int, message: str) -> AsyncIterator[str]:
                 f"CAP: asked {fast_kpi_inline['requested_days']}d, gave {fast_kpi_inline['period_days']}d. "
                 f"Say '최근 {fast_kpi_inline['period_days']}일 기준', suggest dashboard/BQ for longer.\n"
             )
+        # Auto-charts — pick 1 by query intent FIRST, then generate only that PNG.
+        # (이전엔 7-9개 다 생성 후 1개만 쓰는 낭비; cold matplotlib + 다중 생성 → ~25s 손실)
+        d = fast_kpi_inline['data']
+        rev = d.get("revenue") or {}
+        top_payers = rev.get("top_payers", []) if isinstance(rev, dict) else []
+        ts = d.get("timeseries", [])
+
+        def _titled(items: list[dict]) -> list[dict]:
+            return [{**it, "_lbl": (it.get("title") or it.get("content"))} for it in (items or [])]
+
+        # chart_name → (kind, args) ; lazy — not executed until picked
+        bar_specs: dict[str, tuple[list[dict], str, str, str]] = {
+            "top_genres":           (d.get("top_genres", []),                "name",    "events",     f"{domain.upper()} 장르별 인기 TOP 10"),
+            "top_contents":         (_titled(d.get("top_contents", [])),     "_lbl",    "events",     f"{domain.upper()} 콘텐츠 TOP 10 (이벤트 기준)"),
+            "top_directors":        (d.get("top_directors", []),             "label",   "count",      f"{domain.upper()} 인기 감독 TOP 10"),
+            "top_actors":           (d.get("top_actors", []),                "label",   "count",      f"{domain.upper()} 인기 배우 TOP 10"),
+            "top_revenue_contents": (_titled(d.get("top_revenue_contents", [])),"_lbl",  "revenue",   f"{domain.upper()} 매출 TOP 10"),
+            "top_rated_contents":   (_titled(d.get("top_rated_contents", [])),"_lbl",   "avg_rating", f"{domain.upper()} 평점 높은 콘텐츠 TOP 10"),
+            "top_payers":           (top_payers,                             "user_id", "revenue",    f"{domain.upper()} 최다 결제 유저 TOP 10"),
+        }
+        line_specs: dict[str, tuple[list[str], str]] = {
+            "ts_users":  (["users"],  f"{domain.upper()} 일자별 활동 유저 추이"),
+            "ts_events": (["events"], f"{domain.upper()} 일자별 이벤트 수 추이"),
+        }
+
+        def _available(name: str) -> bool:
+            if name in bar_specs:
+                items, *_ = bar_specs[name]
+                return bool(items)
+            if name in line_specs:
+                return bool(ts)
+            return False
+
+        def _pick_chart_name(q: str) -> str | None:
+            ql = q.lower()
+            rules = [
+                (("추이", "trend", "시계열", "일자별", "일별", "변화"), ["ts_users", "ts_events"]),
+                (("결제 유저", "큰손", "결제한", "payer", "결제하"), ["top_payers"]),
+                (("매출", "수익", "revenue"), ["top_revenue_contents"]),
+                (("감독", "director"), ["top_directors"]),
+                (("배우", "actor"), ["top_actors"]),
+                (("평점 높", "베스트", "최고 평점", "best", "rated"), ["top_rated_contents"]),
+                (("장르", "genre"), ["top_genres"]),
+                (("콘텐츠", "영화", "작품", "content"), ["top_contents", "top_rated_contents"]),
+            ]
+            for kws, names in rules:
+                if any(k in ql for k in kws):
+                    for n in names:
+                        if _available(n):
+                            return n
+            # fallback: any available bar chart
+            for n in bar_specs:
+                if _available(n):
+                    return n
+            return None
+
+        picked_chart = _pick_chart_name(message)
+        picked_chart_path: str | None = None
+        picked_chart_alt: str = ""
+        if picked_chart:
+            cache_key = (domain, fast_kpi_inline["period"], picked_chart, str(session_id))
+            # Note: session_id 포함 — 다른 sessions 의 PNG 파일이 cleanup 으로 사라져도
+            # 자기 session 내 재사용은 hit. (cross-session caching 은 cleanup race condition 위험)
+            cached = _CHART_CACHE.get(cache_key)
+            if cached:
+                fs_path = Path("/tmp" + cached.replace("/eda-files", "/eda"))
+                if fs_path.exists():
+                    picked_chart_path = cached
+                    if _PROM_AVAILABLE:
+                        try: CHART_CACHE_HIT.labels(outcome="hit").inc()
+                        except Exception: pass
+                else:
+                    if _PROM_AVAILABLE:
+                        try: CHART_CACHE_HIT.labels(outcome="stale").inc()
+                        except Exception: pass
+            if not picked_chart_path:
+                if picked_chart in bar_specs:
+                    items, lkey, vkey, title_ = bar_specs[picked_chart]
+                    picked_chart_path = _auto_bar_chart(items, lkey, vkey, title_, session_id, picked_chart)
+                    picked_chart_alt = title_
+                elif picked_chart in line_specs:
+                    y_keys, title_ = line_specs[picked_chart]
+                    picked_chart_path = _auto_line_chart(ts, y_keys, title_, session_id, picked_chart)
+                    picked_chart_alt = title_
+                if picked_chart_path:
+                    if len(_CHART_CACHE) >= _CHART_CACHE_MAX:
+                        _CHART_CACHE.pop(next(iter(_CHART_CACHE)))
+                    _CHART_CACHE[cache_key] = picked_chart_path
+                    if _PROM_AVAILABLE:
+                        try: CHART_CACHE_HIT.labels(outcome="miss").inc()
+                        except Exception: pass
+            else:
+                # cache hit → alt 도 spec 에서 채움
+                if picked_chart in bar_specs:
+                    picked_chart_alt = bar_specs[picked_chart][3]
+                elif picked_chart in line_specs:
+                    picked_chart_alt = line_specs[picked_chart][1]
         # KPI JSON minified — saves ~20-30% input tokens.
         kpi_json = json.dumps(fast_kpi_inline['data'], ensure_ascii=False, separators=(",", ":"))
         files_str = ", ".join(fast_kpi_inline['data'].get('files_read', []) or [])
-        fast_system = (
-            f"Watcha analyst. KO answer only. Use KPI below.\n"
-            f"{domain.upper()} {fast_kpi_inline['period']} ({fast_kpi_inline['period_days']}d) "
-            f"intent={classification['intent']} q={classification.get('summary', '')}\n"
-            f"source={fast_kpi_inline['source_path']} files={fast_kpi_inline['data'].get('files_read', [])}\n"
-            f"{cap_note}"
-            f"KPI:{kpi_json}\n\n"
-            f"## Output format — Toss PANDA style (MUST follow this exact structure):\n\n"
-            f"# [질문 한 줄 요약]\n\n"
-            f"## 📅 결과\n"
-            f"[마크다운 표 — 핵심 숫자, ≤10행]\n\n"
-            f"## 📊 집계 기준\n"
-            f"- 기간: {fast_kpi_inline['period']} ({fast_kpi_inline['period_days']}일)\n"
-            f"- 도메인: {domain.upper()}\n"
-            f"- 기준: [정의 — 어떤 action/필터/계산식 — 한 줄]\n"
-            f"- 해석: [용어 의미 — 한 줄]\n\n"
-            f"## 📂 데이터 소스\n"
-            f"- 경로: `{fast_kpi_inline['source_path']}`\n"
-            f"- 파일: `{files_str}`\n\n"
-            f"## 💡 주요 인사이트\n"
-            f"✅ **[항목 1 한 줄 결론 — bold]**\n"
-            f"   - [부연/숫자]\n"
-            f"   - [해석/비교 — 다른 KPI 또는 평균과 비교]\n\n"
-            f"✅ **[항목 2 한 줄 결론]**\n"
-            f"   - [부연]\n"
-            f"   - [해석]\n\n"
-            f"(필요시 ✅ 3번째)\n\n"
-            f"Rules: KO only. 숫자엔 비교 맥락 곁들임 (예: '평균 대비 +X%'). "
-            f"부연 = 숫자/사실. 해석 = '~로 보임/시사함'. "
-            f"No tools/thinking/explore text. No extra sections outside the 4 blocks above.\n"
+        # Backend가 1개 chart 선택 — LLM은 이 chart 만 inline. 다른 chart 보여주지 않음.
+        # alt 텍스트 = chart 한국어 제목 (스크린리더/접근성).
+        charts_str = (f"  - `![{picked_chart_alt}]({picked_chart_path})`"
+                      if picked_chart_path else "  (none)")
+        # Prompt → prompts/fast_panda.tmpl  (편집 시 mtime-watch 로 자동 재로드)
+        fast_system = _prompts.render(
+            "fast_panda",
+            DOMAIN=domain.upper(),
+            PERIOD=fast_kpi_inline["period"],
+            PERIOD_DAYS=fast_kpi_inline["period_days"],
+            INTENT=classification["intent"],
+            QUERY=classification.get("summary", ""),
+            SOURCE_PATH=fast_kpi_inline["source_path"],
+            FILES_LIST=fast_kpi_inline["data"].get("files_read", []),
+            CAP_NOTE=cap_note,
+            KPI_JSON=kpi_json,
+            CHARTS=charts_str,
+            FILES_STR=files_str,
         )
-        # Fetch prior messages for conversation context (last 3 exchanges before this turn)
-        fast_history: list[dict] = []
+        # Conversation history — 직전 user/assistant 4개 turn (multi-turn context)
+        history: list[dict] = []
         try:
             async with db_pool.acquire() as conn:
-                prev_msgs = await conn.fetch(
-                    "SELECT role, content FROM messages "
-                    "WHERE session_id=$1 "
+                hist_rows = await conn.fetch(
+                    "SELECT role, content FROM messages WHERE session_id=$1 "
                     "AND id < (SELECT max(id) FROM messages WHERE session_id=$1) "
-                    "ORDER BY id DESC LIMIT 6",
+                    "ORDER BY id DESC LIMIT 4",
                     session_id,
                 )
-            fast_history = [{"role": r["role"], "content": r["content"]} for r in reversed(prev_msgs)]
+            history = list(reversed([{"role": r["role"], "content": r["content"]} for r in hist_rows]))
         except Exception:
-            log.exception("Failed to fetch fast-track conversation history")
+            log.exception("history fetch failed")
 
         full_text = []
         usage_info = None
         async for kind, payload_ in stream_oauth_completion(
             model=lead_model, system=fast_system, user_msg=message, max_tokens=2048,
-            history=fast_history or None,
+            history=history or None,
         ):
             if kind == "text":
                 full_text.append(payload_)
@@ -1266,7 +1913,7 @@ async def _stream_response(session_id: int, message: str) -> AsyncIterator[str]:
                 except json.JSONDecodeError:
                     usage_info = None
             elif kind == "error":
-                yield _sse("error", {"error": payload_})
+                yield _sse_error("llm_stream_failed", payload_)
                 errored = True if "errored" in dir() else True
                 break
         # 통합 답변 DB persist
@@ -1277,6 +1924,12 @@ async def _stream_response(session_id: int, message: str) -> AsyncIterator[str]:
                     "INSERT INTO messages(session_id, role, content) VALUES($1, 'assistant', $2)",
                     session_id, assistant_text,
                 )
+        # Token usage 누적 (subscription quota 추세 모니터링)
+        if usage_info:
+            try:
+                await _record_token_usage(lead_model, usage_info)
+            except Exception:
+                log.exception("token_usage persist failed (continuing)")
         # cost = 0 (subscription quota — API 호출 X)
         yield _sse("done", {"cost_usd": 0.0, "via": "oauth_direct", "usage": usage_info})
         return
@@ -1296,9 +1949,22 @@ async def _stream_response(session_id: int, message: str) -> AsyncIterator[str]:
     assistant_chunks: list[str] = []
     new_sdk_session: str | None = None
     errored = False
+    # Slow track 안정성 가드:
+    #  - 5분 hard timeout (subprocess hang 방지)
+    #  - tool message 100개 초과 시 infinite-loop 의심 → abort
+    slow_deadline = time.time() + 300
+    tool_msg_count = 0
+    log.info("[slow-track] starting query (deadline 300s)")
 
     try:
         async for msg in query(prompt=message, options=options):
+            if time.time() > slow_deadline:
+                yield _sse_error(
+                    "slow_track_timeout",
+                    "분석이 5분을 초과하여 중단됨. 더 좁은 질문으로 다시 시도.",
+                )
+                errored = True
+                break
             cls = type(msg).__name__
 
             if cls == "SystemMessage":
@@ -1316,6 +1982,14 @@ async def _stream_response(session_id: int, message: str) -> AsyncIterator[str]:
                         continue
                     tool_name = getattr(block, "name", None)
                     if tool_name:
+                        tool_msg_count += 1
+                        if tool_msg_count > 100:
+                            yield _sse_error(
+                                "slow_track_runaway",
+                                "tool 호출이 100회를 초과해 무한 루프 의심 — 중단",
+                            )
+                            errored = True
+                            break
                         # Truncated tool input for timing/debug; long Bash
                         # commands get clipped to keep the SSE frame small.
                         tool_input = getattr(block, "input", None) or {}
@@ -1333,12 +2007,11 @@ async def _stream_response(session_id: int, message: str) -> AsyncIterator[str]:
                     # budget 초과, max_turns 초과, API 에러 등 — 종료 사유 안내
                     errored = True
                     reason = subtype if subtype != "success" else "API/내부 에러"
-                    yield _sse("error", {
-                        "error": f"분석이 비정상 종료됨 — {reason}",
-                        "subtype": subtype,
-                        "is_error": is_error,
-                        "cost_usd": cost,
-                    })
+                    yield _sse_error(
+                        "agent_abnormal_exit",
+                        f"분석이 비정상 종료됨 — {reason}",
+                        subtype=subtype, is_error=is_error, cost_usd=cost,
+                    )
                 else:
                     yield _sse("done", {"cost_usd": cost})
                 break
@@ -1349,7 +2022,7 @@ async def _stream_response(session_id: int, message: str) -> AsyncIterator[str]:
     except Exception as exc:
         log.exception("Agent query failed")
         errored = True
-        yield _sse("error", {"error": str(exc)})
+        yield _sse_error("internal", str(exc), exc_type=type(exc).__name__)
 
     assistant_text = "".join(assistant_chunks).strip()
     if not assistant_text:
@@ -1384,12 +2057,126 @@ def _sse(event_type: str, payload: dict[str, Any]) -> str:
     return f"data: {json.dumps({'type': event_type, **payload}, ensure_ascii=False)}\n\n"
 
 
+def _sse_error(code: str, message: str, **extra: Any) -> str:
+    """Structured error SSE event — {type:error, code, message, ...}."""
+    return _sse("error", {"code": code, "message": message, "error": message, **extra})
+
+
 @app.post("/api/sessions/{session_id}/chat")
 async def chat(session_id: int, req: ChatRequest) -> StreamingResponse:
     return StreamingResponse(
         _stream_response(session_id, req.message),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+# /archive/mocha_sessions/<date>/ 에 마크다운으로 영구 저장.
+# 데모/리뷰 자료로 모아두는 용도. 별도 서버 권한이라 mocha 가 write 가능해야 함.
+_ARCHIVE_ROOT = Path(os.environ.get("MOCHA_ARCHIVE_ROOT", "/archive/mocha_sessions"))
+
+
+@app.post("/api/sessions/{session_id}/archive")
+async def archive_session(session_id: int) -> dict:
+    """현재 대화 markdown 으로 변환 후 `/archive/mocha_sessions/<date>/` 에 저장."""
+    if not db_pool:
+        raise HTTPException(status_code=503, detail="db unavailable")
+    async with db_pool.acquire() as conn:
+        sess = await conn.fetchrow(
+            "SELECT id, title, created_at FROM sessions WHERE id=$1", session_id
+        )
+        if not sess:
+            raise HTTPException(status_code=404, detail="session not found")
+        rows = await conn.fetch(
+            "SELECT role, content, created_at FROM messages WHERE session_id=$1 ORDER BY id ASC",
+            session_id,
+        )
+    if not rows:
+        raise HTTPException(status_code=400, detail="empty session — 대화 없음")
+    # build markdown (export_session 과 동일 포맷)
+    lines = [
+        f"# {sess['title']}",
+        f"",
+        f"- 세션 #{sess['id']}",
+        f"- 시작: {sess['created_at'].isoformat()}",
+        f"- 메시지: {len(rows)}",
+        "",
+        "---",
+        "",
+    ]
+    for r in rows:
+        role_label = "🧑 사용자" if r["role"] == "user" else "🤖 MOCHA"
+        lines.append(f"## {role_label}  ·  {r['created_at'].isoformat()}")
+        lines.append("")
+        lines.append(r["content"])
+        lines.append("")
+        lines.append("---")
+        lines.append("")
+    body = "\n".join(lines)
+
+    from datetime import date as _date
+    import re as _re
+    safe_title = _re.sub(r"[^\w가-힣\-]+", "_", sess["title"])[:60] or "session"
+    date_dir = _ARCHIVE_ROOT / _date.today().isoformat()
+    try:
+        date_dir.mkdir(parents=True, exist_ok=True)
+    except PermissionError as exc:
+        raise HTTPException(status_code=500, detail=f"archive write 권한 없음: {exc}")
+    out_path = date_dir / f"{session_id:05d}_{safe_title}.md"
+    try:
+        out_path.write_text(body, encoding="utf-8")
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"archive write 실패: {exc}")
+    log.info("[archive] session %d saved → %s (%d bytes)", session_id, out_path, len(body))
+    return {
+        "ok": True,
+        "path": str(out_path),
+        "size_bytes": len(body.encode("utf-8")),
+        "messages": len(rows),
+    }
+
+
+@app.get("/api/sessions/{session_id}/export")
+async def export_session(session_id: int, format: str = "md") -> StreamingResponse:
+    """Download session as markdown. ?format=md (only md supported for now)."""
+    if format != "md":
+        raise HTTPException(status_code=400, detail="only format=md supported")
+    if not db_pool:
+        raise HTTPException(status_code=503, detail="db unavailable")
+    async with db_pool.acquire() as conn:
+        sess = await conn.fetchrow(
+            "SELECT id, title, created_at FROM sessions WHERE id=$1", session_id
+        )
+        if not sess:
+            raise HTTPException(status_code=404, detail="session not found")
+        rows = await conn.fetch(
+            "SELECT role, content, created_at FROM messages WHERE session_id=$1 ORDER BY id ASC",
+            session_id,
+        )
+    lines = [
+        f"# {sess['title']}",
+        f"",
+        f"- 세션 #{sess['id']}",
+        f"- 시작: {sess['created_at'].isoformat()}",
+        f"- 메시지: {len(rows)}",
+        "",
+        "---",
+        "",
+    ]
+    for r in rows:
+        role_label = "🧑 사용자" if r["role"] == "user" else "🤖 MOCHA"
+        lines.append(f"## {role_label}  ·  {r['created_at'].isoformat()}")
+        lines.append("")
+        lines.append(r["content"])
+        lines.append("")
+        lines.append("---")
+        lines.append("")
+    body = "\n".join(lines).encode("utf-8")
+    fname = f"mocha-session-{session_id}.md"
+    return StreamingResponse(
+        iter([body]),
+        media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
     )
 
 

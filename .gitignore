@@ -17,6 +17,13 @@ _runtime/pgdata/
 _runtime/server.log
 _runtime/*.feather
 _runtime/cache/
+_runtime/*.pkl
+_runtime/*.sse
+
+# Tests / coverage
+.pytest_cache/
+.coverage
+htmlcov/
 
 # Large source images (PNG outputs are tracked; raw generated ones are not)
 Gemini_Generated_Image_*.png

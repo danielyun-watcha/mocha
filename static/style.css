@@ -141,8 +141,9 @@ body {
 .view[hidden] { display: none; }
 .view-agent {
   display: grid;
-  grid-template-columns: 240px 1fr;
+  grid-template-columns: 220px minmax(0, 1fr);
   overflow: hidden;
+  min-height: 0;
 }
 
 /* ═══════════════════════ KPI dashboard ═══════════════════════ */
@@ -223,9 +224,9 @@ body {
 .kpi-row { display: grid; grid-template-columns: 1.6fr 1fr; gap: 8px; }
 .kpi-row-bottom { grid-template-columns: 2fr 1fr; }
 .kpi-row-eda { grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
-/* 4-col bottom row — visible panels distributed evenly via auto-fit */
-.kpi-row-4col { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
-.kpi-row-4col .kpi-panel { min-height: 320px; padding: 12px 14px; }
+/* 4-col bottom row — 2x2 grid (2 columns, 2 rows) for breathing room */
+.kpi-row-4col { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.kpi-row-4col .kpi-panel { min-height: 320px; padding: 14px 16px; }
 .kpi-panel-top { min-height: 280px; overflow: hidden; }
 .kpi-panel-donut { min-height: 280px; }
 .kpi-panel-rating, .kpi-panel-hour, .kpi-panel-pareto { min-height: 200px; }
@@ -874,12 +875,13 @@ canvas.chart-ts, canvas.chart-actions {
 /* content type pill prefix */
 .ctype-pill {
   display: inline-block;
-  font-size: 9px; font-weight: 700;
-  padding: 1px 5px; border-radius: 3px;
-  margin-right: 5px;
+  font-size: 10px; font-weight: 700;
+  padding: 2px 7px; border-radius: 4px;
+  margin-right: 10px;
   text-transform: uppercase;
-  letter-spacing: 0.3px;
+  letter-spacing: 0.4px;
   vertical-align: middle;
+  min-width: 22px; text-align: center;
 }
 .ctype-pill[data-ct="1"]  { background: rgba(91, 141, 238, 0.18); color: var(--blue); }
 .ctype-pill[data-ct="2"]  { background: rgba(217, 119, 87, 0.18); color: var(--accent); }
@@ -997,6 +999,8 @@ canvas.chart-ts, canvas.chart-actions {
   border-right: 1px solid var(--border);
   display: flex; flex-direction: column;
   padding: 14px;
+  min-width: 0;
+  overflow: hidden;
 }
 .new-btn {
   background: var(--accent); color: white; border: 0;
@@ -1081,23 +1085,23 @@ canvas.chart-ts, canvas.chart-actions {
   text-align: center;
 }
 .welcome-logo {
-  width: 240px; height: 235px;
+  width: 260px; height: 260px;
   margin-bottom: 8px;
   display: inline-block;
-  background: url("/static/mascot.png") no-repeat center / contain;
+  background: url("/static/mascot-full.png") no-repeat center / contain;
   animation: mascotBob 3s ease-in-out infinite;
 }
 [data-theme="dark"] .welcome-logo {
-  background-image: url("/static/mascot-dark.png");
+  background-image: url("/static/mascot-full-dark.png");
 }
 .rail-logo {
   display: inline-block;
-  width: 52px; height: 52px;
-  background: url("/static/mascot.png") no-repeat center / contain;
+  width: 48px; height: 32px;
+  background: url("/static/mascot-face.png") no-repeat center / contain;
   flex-shrink: 0;
 }
 [data-theme="dark"] .rail-logo {
-  background-image: url("/static/mascot-dark.png");
+  background-image: url("/static/mascot-face-dark.png");
 }
 @keyframes mascotBob {
   0%, 100% { transform: translateY(0); }
@@ -1212,10 +1216,16 @@ canvas.chart-ts, canvas.chart-actions {
 }
 .msg-content th { background: var(--panel); font-weight: 600; }
 .msg-content code {
-  background: rgba(217, 119, 87, 0.18); color: #f5d2c2;
+  background: rgba(217, 119, 87, 0.14);
+  color: #b94e22;            /* light theme: 진한 주황 — 베이지 bg 대비 또렷 */
   padding: 1px 6px; border-radius: 4px;
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   font-size: 0.9em;
+  font-weight: 500;
+}
+[data-theme="dark"] .msg-content code {
+  background: rgba(217, 119, 87, 0.22);
+  color: #ffc8a8;            /* dark theme: 밝은 살구 */
 }
 .msg-content pre {
   background: #0c0f15; border: 1px solid var(--border);
@@ -1228,9 +1238,15 @@ canvas.chart-ts, canvas.chart-actions {
   padding: 0.2em 0 0.2em 14px; color: var(--ink-soft);
 }
 .msg-content img {
-  max-width: 100%; height: auto;
+  max-width: 100%; height: auto; display: block;
+  background: #ffffff;
   border: 1px solid var(--border); border-radius: var(--radius-sm);
-  margin: 0.8em 0;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+  margin: 1em 0;
+}
+[data-theme="dark"] .msg-content img {
+  background: #fafafa;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.25);
 }
 .msg-content a { color: var(--accent); text-decoration: underline; }
 
@@ -1340,4 +1356,31 @@ canvas.chart-ts, canvas.chart-actions {
   .kpi-aside { order: -1; }
   .kpi-row { grid-template-columns: 1fr; }
   .kpi-cards-hero { grid-template-columns: repeat(2, 1fr); }
+}
+
+/* ── Mobile (≤768px) — rail/sidebar 축소, kpi 1열, chat 풀폭 ─────── */
+@media (max-width: 768px) {
+  /* 좌측 rail: icon only — 라벨 숨김, 너비 축소 */
+  .rail { width: 56px !important; min-width: 56px !important; }
+  .rail-label, .rail-sub, .rail-brand-text { display: none !important; }
+  .rail-item { justify-content: center !important; padding: 8px 0 !important; }
+
+  /* chat sidebar (session 리스트): 처음엔 hidden — 햄버거로 토글 (사용자 추가 가능) */
+  .sidebar { display: none !important; }
+
+  /* kpi: 모든 row 1열로 */
+  .kpi-row, .kpi-row-4col, .kpi-row-eda {
+    grid-template-columns: 1fr !important;
+  }
+  .kpi-cards-hero { grid-template-columns: 1fr 1fr !important; }
+  .kpi-panel { padding: 12px 14px !important; min-height: auto !important; }
+
+  /* chat: 풀폭 + composer 큰 padding */
+  .chat-shell, .chat-main { width: 100% !important; padding: 0 8px !important; }
+  .msg-row .msg-content { max-width: 92vw !important; }
+  .composer { padding: 12px !important; }
+
+  /* 표 cell wrap 허용 — content title 너무 길면 줄바꿈 */
+  .t-content { max-width: 200px !important; }
+  .t-content .t-title { max-width: 160px !important; }
 }

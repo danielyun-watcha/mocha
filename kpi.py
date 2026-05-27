@@ -24,6 +24,7 @@ File selection: 같은 end date 의 cover snapshot 여러 개 중 start 가 가�
 from __future__ import annotations
 
 import glob
+import logging
 import os
 import re
 import threading
@@ -35,6 +36,8 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
+
+logger = logging.getLogger("mocha.kpi")
 
 KST = timezone(timedelta(hours=9))
 
@@ -85,12 +88,50 @@ def _preprocess(df: pd.DataFrame, domain: str) -> pd.DataFrame:
 
 # Result-level cache: 같은 (domain, start, end, content_types) query 가 다시 들어오면
 # 모든 KPI 계산 skip 하고 응답 dict 그대로 반환.  도메인 토글 시 즉시 응답.
+# REDIS_URL 환경변수 설정 시 Redis 백엔드 (multi-worker 공유), 미설정 시 in-process dict.
 _RESULT_CACHE: "OrderedDict[tuple, dict]" = OrderedDict()
 _RESULT_CACHE_LOCK = threading.Lock()
 _RESULT_CACHE_MAX = 80  # ~3 domains × 약간의 기간 조합
 
+_REDIS_CLIENT = None
+_REDIS_PREFIX = "mocha:kpi:"
+_REDIS_TTL_S = 24 * 3600  # 24h — daily prewarm으로 갱신
+
+
+def _redis_init() -> None:
+    """Connect to Redis if REDIS_URL set. Lazily called on first cache access."""
+    global _REDIS_CLIENT
+    if _REDIS_CLIENT is not None:
+        return
+    import os
+    url = os.environ.get("REDIS_URL")
+    if not url:
+        return
+    try:
+        import redis as _redis
+        c = _redis.Redis.from_url(url, socket_timeout=2.0, socket_connect_timeout=2.0)
+        c.ping()
+        _REDIS_CLIENT = c
+        logger.info("[kpi-cache] Redis backend: %s", url)
+    except Exception:
+        logger.exception("[kpi-cache] Redis init failed — falling back to in-process")
+
+
+def _redis_key(key: tuple) -> str:
+    # tuple key → stable string. repr() 은 tuple 구조 잘 보존.
+    return _REDIS_PREFIX + repr(key)
+
 
 def _cache_get(key: tuple) -> dict | None:
+    _redis_init()
+    if _REDIS_CLIENT is not None:
+        try:
+            import pickle
+            raw = _REDIS_CLIENT.get(_redis_key(key))
+            if raw is not None:
+                return pickle.loads(raw)
+        except Exception:
+            logger.exception("[kpi-cache] redis get failed — falling back local")
     with _RESULT_CACHE_LOCK:
         v = _RESULT_CACHE.get(key)
         if v is not None:
@@ -99,6 +140,14 @@ def _cache_get(key: tuple) -> dict | None:
 
 
 def _cache_put(key: tuple, value: dict) -> None:
+    _redis_init()
+    if _REDIS_CLIENT is not None:
+        try:
+            import pickle
+            _REDIS_CLIENT.setex(_redis_key(key), _REDIS_TTL_S, pickle.dumps(value))
+            return
+        except Exception:
+            logger.exception("[kpi-cache] redis set failed — falling back local")
     with _RESULT_CACHE_LOCK:
         _RESULT_CACHE[key] = value
         _RESULT_CACHE.move_to_end(key)
@@ -237,6 +286,38 @@ CONTENT_TYPE_LABEL = {
 
 # Domains that support genre breakdown (성인 제외, content type 별 meta 모두 cover)
 GENRE_DOMAINS = {"galaxy", "mars"}
+
+
+# ── content_id → title (Korean) — pulled from MySQL via remy-worker, pickled ──
+_TITLE_LOCK = threading.Lock()
+_TITLE_MAP: dict[str, str] | None = None
+_TITLE_MAP_MTIME: float = 0.0
+_TITLE_MAP_PATH = Path(__file__).parent / "_runtime" / "content_titles_ko.pkl"
+
+
+def _load_title_map() -> dict[str, str]:
+    """Lazy load with mtime-watch: pickle 갱신되면 다음 호출에서 자동 재로드.
+
+    Source: books table + translations (Movie/TvSeason/...) via remy-worker.
+    Path: _runtime/content_titles_ko.pkl. Returns {} if file missing.
+    """
+    global _TITLE_MAP, _TITLE_MAP_MTIME
+    try:
+        mtime = _TITLE_MAP_PATH.stat().st_mtime
+    except FileNotFoundError:
+        if _TITLE_MAP is None:
+            _TITLE_MAP = {}
+        return _TITLE_MAP
+    if _TITLE_MAP is not None and mtime == _TITLE_MAP_MTIME:
+        return _TITLE_MAP
+    with _TITLE_LOCK:
+        if _TITLE_MAP is not None and mtime == _TITLE_MAP_MTIME:
+            return _TITLE_MAP
+        import pickle
+        with open(_TITLE_MAP_PATH, "rb") as f:
+            _TITLE_MAP = pickle.load(f)
+        _TITLE_MAP_MTIME = mtime
+        return _TITLE_MAP
 
 
 # ── genre metadata (lazy load from /archive/foundation_tmp) ──────
@@ -428,8 +509,10 @@ def _adult_top_revenue_contents(df: pd.DataFrame, domain: str, n: int = 10) -> l
         purchases=("price", "size"),
         users=("user_id", "nunique"),
     ).sort_values("revenue", ascending=False).head(n).reset_index()
+    tm = _load_title_map()
     return [
-        {"content": str(r["content"]), "revenue": int(r["revenue"]),
+        {"content": str(r["content"]), "title": tm.get(str(r["content"]), ""),
+         "revenue": int(r["revenue"]),
          "purchases": int(r["purchases"]), "users": int(r["users"])}
         for _, r in g.iterrows()
     ]
@@ -974,8 +1057,10 @@ def _top_rated_contents(df: pd.DataFrame, domain: str, n: int = 10, min_count: i
         g = rated.groupby("content", observed=True)["rating"].agg(["mean", "count"]).reset_index()
         g = g[g["count"] >= max(2, min_count // 5)]
     g = g.sort_values(["mean", "count"], ascending=[False, False]).head(n)
+    tm = _load_title_map()
     return [
-        {"content": str(r["content"]), "avg_rating": round(float(r["mean"]), 2),
+        {"content": str(r["content"]), "title": tm.get(str(r["content"]), ""),
+         "avg_rating": round(float(r["mean"]), 2),
          "rate_count": int(r["count"])}
         for _, r in g.iterrows()
     ]
@@ -1142,8 +1227,10 @@ def _top_contents(df: pd.DataFrame, n: int = 10) -> list[dict]:
         .head(n)
         .reset_index()
     )
+    tm = _load_title_map()
     return [
-        {"content": str(r["content"]), "events": int(r["events"]), "users": int(r["users"])}
+        {"content": str(r["content"]), "title": tm.get(str(r["content"]), ""),
+         "events": int(r["events"]), "users": int(r["users"])}
         for _, r in g.iterrows()
     ]
 

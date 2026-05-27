@@ -41,11 +41,12 @@
       <span class="rail-sub">성인+</span>
     </button>
     <button class="rail-item" data-view="agent">
-      <span class="rail-icon">🤖</span><span class="rail-label">Agent</span>
+      <span class="rail-icon rail-mocha-icon"></span><span class="rail-label">MOCHA</span>
       <span class="rail-sub">자연어 분석</span>
     </button>
     <div class="rail-foot"><small>v0.2 · Phase 1</small></div>
   </nav>
+
 
   <!-- ━━━ KPI dashboard views (galaxy / mars / adult) ━━━ -->
   <template id="kpi-template">
@@ -334,16 +335,25 @@
         <div class="sidebar-foot"><small>세션 · 자연어 분석</small></div>
       </aside>
       <section class="chat">
+        <div class="chat-header">
+          <button id="archive-btn" class="archive-btn" type="button" title="현재 대화를 /archive 에 저장">
+            📦 /archive 에 저장
+          </button>
+          <button class="theme-toggle" type="button" aria-label="테마 전환" title="테마 전환">
+            <span class="theme-icon-dark">🌙</span>
+            <span class="theme-icon-light">☀️</span>
+          </button>
+        </div>
         <div class="messages" id="messages">
           <div class="welcome">
             <span class="welcome-logo" role="img" aria-label="MOCHA"></span>
-            <h2>안녕! 난 MOCHA야 ☕</h2>
+            <h2>안녕! 난 MOCHA야</h2>
             <p>자연어로 Watcha 데이터에 대해 물어보세요.</p>
             <div class="examples">
-              <button class="example">왓챠 도메인 평점 높은 영화 TOP 10</button>
-              <button class="example">피디아 어제 활성 유저 추이</button>
-              <button class="example">성인+ rental TOP 10</button>
-              <button class="example">graph_modeling 데이터 EDA</button>
+              <button class="example">🎬 Mars 최근 30일 인기 장르 차트로 보여줘</button>
+              <button class="example">💰 성인관 최다 결제 유저는?</button>
+              <button class="example">⭐ 피디아 평점 높은 영화 TOP 10</button>
+              <button class="example">🎥 왓챠 인기 감독 TOP 5 그래프로</button>
             </div>
           </div>
         </div>
@@ -362,6 +372,7 @@
     </div>
   </main>
 
+  <script src="/static/i18n.js"></script>
   <script src="/static/dashboard.js"></script>
   <script src="/static/app.js"></script>
 </body>
