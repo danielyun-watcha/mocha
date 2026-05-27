@@ -36,11 +36,9 @@ PORT = int(os.environ.get("PORT", os.environ.get("DEV_PORT", 8080)))
 DATABASE_URL = os.environ["DATABASE_URL"]
 MODEL = os.environ.get("MOCHA_MODEL", "claude-sonnet-4-6")
 
-# Personal API key (sk-ant-api03-...) — 우선 사용. 없으면 team OAuth fallback.
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
-
 # OAuth: claude.ai team subscription 의 access token 으로 Anthropic API 직접 호출.
-# ANTHROPIC_API_KEY 미설정 시에만 사용.
+# API key (sk-ant-api03-...) 와 다른 인증 — subscription quota 만 소모, 추가 과금 X.
+# subprocess CLI spawn overhead (~5-10s) 우회 → fast track 응답 5-8s 가능.
 _OAUTH_CRED_PATH = Path(os.environ.get("CLAUDE_OAUTH_CRED", "/root/.claude/.credentials.json"))
 
 
@@ -64,30 +62,22 @@ async def stream_oauth_completion(
     model: str, system: str, user_msg: str, max_tokens: int = 2048,
     history: list[dict] | None = None,
 ) -> AsyncIterator[tuple[str, str]]:
-    """Stream Anthropic Messages via personal API key or OAuth Bearer fallback.
+    """Stream Anthropic Messages via OAuth Bearer (team subscription quota).
 
     Yields ('text', delta) chunks and a final ('done', cost_json).
     Falls back gracefully on auth/network errors via ('error', detail).
     history: prior [{"role":"user"|"assistant","content":"..."}] messages for context.
     """
-    if ANTHROPIC_API_KEY:
-        headers = {
-            "x-api-key": ANTHROPIC_API_KEY,
-            "anthropic-version": "2023-06-01",
-            "content-type": "application/json",
-            "accept": "text/event-stream",
-        }
-    else:
-        token = _load_oauth_token()
-        if not token:
-            yield ("error", "OAuth token unavailable or expired — claude /login 필요")
-            return
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "anthropic-version": "2023-06-01",
-            "content-type": "application/json",
-            "accept": "text/event-stream",
-        }
+    token = _load_oauth_token()
+    if not token:
+        yield ("error", "OAuth token unavailable or expired — claude /login 필요")
+        return
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+        "accept": "text/event-stream",
+    }
     payload = {
         "model": model,
         "max_tokens": max_tokens,
