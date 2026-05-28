@@ -1,0 +1,677 @@
+[
+  {
+    "q": "성인관 재구매율 추이",
+    "exp": {
+      "track": "fast",
+      "intent": "narrow_distribution",
+      "domain": "adult"
+    },
+    "pred": {
+      "track": "fast",
+      "intent": "narrow_distribution",
+      "domain": "adult",
+      "summary": "성인관 사용자의 재구매율 시계열 추이 조회"
+    },
+    "elapsed": 4.610108375549316
+  },
+  {
+    "q": "adult preview→구매 funnel",
+    "exp": {
+      "track": "fast",
+      "intent": "interpretive_qa",
+      "domain": "adult"
+    },
+    "pred": {
+      "track": "fast",
+      "intent": "narrow_distribution",
+      "domain": "adult",
+      "summary": "성인 콘텐츠의 preview → 구매 단계별 퍼널 분석"
+    },
+    "elapsed": 5.2518088817596436
+  },
+  {
+    "q": "graph_modeling 시청 패턴 EDA",
+    "exp": {
+      "track": "slow",
+      "intent": "broad_eda",
+      "domain": "watcha_main"
+    },
+    "pred": {
+      "track": "slow",
+      "intent": "broad_eda",
+      "domain": "watcha_main",
+      "summary": "graph_modeling 데이터의 시청 패턴 전반 EDA 분석"
+    },
+    "elapsed": 7.011888027191162
+  },
+  {
+    "q": "왓챠에서 가장 많이 시청된 영화 TOP 10",
+    "exp": {
+      "track": "fast",
+      "intent": "narrow_top_n",
+      "domain": "watcha_main"
+    },
+    "pred": {
+      "track": "fast",
+      "intent": "narrow_top_n",
+      "domain": "watcha_main",
+      "summary": "왓챠 플랫폼에서 시청 횟수 기준 상위 10개 영화 조회"
+    },
+    "elapsed": 7.581330299377441
+  },
+  {
+    "q": "왓챠 어제 DAU",
+    "exp": {
+      "track": "fast",
+      "intent": "narrow_count",
+      "domain": "watcha_main"
+    },
+    "pred": {
+      "track": "fast",
+      "intent": "narrow_count",
+      "domain": "watcha_main",
+      "summary": "왓챠 어제(2026-05-24) DAU 단일 수치 조회"
+    },
+    "elapsed": 4.909343242645264
+  },
+  {
+    "q": "우리 abtest 결과 정리해줘",
+    "exp": {
+      "track": "slow",
+      "intent": "ab_test",
+      "domain": "unknown"
+    },
+    "pred": {
+      "track": "slow",
+      "intent": "ab_test",
+      "domain": "unknown",
+      "summary": "A/B 테스트 결과 종합 정리 요청"
+    },
+    "elapsed": 6.496866941452026
+  },
+  {
+    "q": "user_bert mars play 1인당 추이",
+    "exp": {
+      "track": "fast",
+      "intent": "narrow_distribution",
+      "domain": "watcha_main"
+    },
+    "pred": {
+      "track": "fast",
+      "intent": "narrow_distribution",
+      "domain": "watcha_main",
+      "summary": "user_bert mars 데이터에서 1인당 play 수의 시간별/구간별 추이 확인"
+    },
+    "elapsed": 7.205249071121216
+  },
+  {
+    "q": "왓챠 시청율 어떻게 돼?",
+    "exp": {
+      "track": "fast",
+      "intent": "narrow_count",
+      "domain": "watcha_main"
+    },
+    "pred": {
+      "track": "fast",
+      "intent": "narrow_count",
+      "domain": "watcha_main",
+      "summary": "왓챠 시청율 단일 수치 조회"
+    },
+    "elapsed": 4.761078834533691
+  },
+  {
+    "q": "성인+ heavy buyer 매출 점유",
+    "exp": {
+      "track": "fast",
+      "intent": "interpretive_qa",
+      "domain": "adult"
+    },
+    "pred": {
+      "track": "fast",
+      "intent": "narrow_count",
+      "domain": "adult",
+      "summary": "성인+ 도메인에서 heavy buyer가 전체 매출에서 차지하는 점유율 조회"
+    },
+    "elapsed": 13.61560606956482
+  },
+  {
+    "q": "next_watch 데이터 사이즈",
+    "exp": {
+      "track": "fast",
+      "intent": "narrow_count",
+      "domain": "watcha_main"
+    },
+    "pred": {
+      "track": "fast",
+      "intent": "narrow_count",
+      "domain": "watcha_main",
+      "summary": "next_watch 데이터셋의 크기(행/용량 등) 확인"
+    },
+    "elapsed": 5.582340955734253
+  },
+  {
+    "q": "rec_adult EDA 전반",
+    "exp": {
+      "track": "slow",
+      "intent": "broad_eda",
+      "domain": "adult"
+    },
+    "pred": {
+      "track": "slow",
+      "intent": "broad_eda",
+      "domain": "unknown",
+      "summary": "분류 결과 파싱 실패"
+    },
+    "elapsed": 20.384694814682007
+  },
+  {
+    "q": "rec_galaxy A/B test 사후 분석",
+    "exp": {
+      "track": "slow",
+      "intent": "ab_test",
+      "domain": "pedia"
+    },
+    "pred": {
+      "track": "slow",
+      "intent": "ab_test",
+      "domain": "pedia",
+      "summary": "rec_galaxy 도메인의 A/B 테스트 사후 분석 요청"
+    },
+    "elapsed": 6.505171060562134
+  },
+  {
+    "q": "rec_adult LightGBM vs HSTU A/B",
+    "exp": {
+      "track": "slow",
+      "intent": "ab_test",
+      "domain": "adult"
+    },
+    "pred": {
+      "track": "slow",
+      "intent": "ab_test",
+      "domain": "adult",
+      "summary": "rec_adult 도메인에서 LightGBM과 HSTU 모델 간 A/B 테스트 결과 비교 분석"
+    },
+    "elapsed": 7.077517032623291
+  },
+  {
+    "q": "왓챠 CVR click→play",
+    "exp": {
+      "track": "fast",
+      "intent": "narrow_count",
+      "domain": "watcha_main"
+    },
+    "pred": {
+      "track": "fast",
+      "intent": "narrow_count",
+      "domain": "watcha_main",
+      "summary": "왓챠 서비스에서 click에서 play로 이어지는 전환율(CVR) 단일 수치 조회"
+    },
+    "elapsed": 5.334621429443359
+  },
+  {
+    "q": "왓챠 피디아 평균 평점 얼마야?",
+    "exp": {
+      "track": "fast",
+      "intent": "narrow_count",
+      "domain": "pedia"
+    },
+    "pred": {
+      "track": "fast",
+      "intent": "narrow_count",
+      "domain": "pedia",
+      "summary": "왓챠 피디아 전체 콘텐츠의 평균 별점 조회"
+    },
+    "elapsed": 4.881268501281738
+  },
+  {
+    "q": "이번 분석 노션에 올려줘",
+    "exp": {
+      "track": "fast",
+      "intent": "notion",
+      "domain": "unknown"
+    },
+    "pred": {
+      "track": "fast",
+      "intent": "notion",
+      "domain": "unknown",
+      "summary": "분석 결과를 노션에 업로드 요청"
+    },
+    "elapsed": 4.4638261795043945
+  },
+  {
+    "q": "MARS 인기 배우 TOP 5",
+    "exp": {
+      "track": "fast",
+      "intent": "narrow_top_n",
+      "domain": "watcha_main"
+    },
+    "pred": {
+      "track": "fast",
+      "intent": "narrow_top_n",
+      "domain": "watcha_main",
+      "summary": "MARS 데이터에서 인기 배우 상위 5명 조회"
+    },
+    "elapsed": 5.082948684692383
+  },
+  {
+    "q": "왓챠 재시청률 분석해줘",
+    "exp": {
+      "track": "fast",
+      "intent": "interpretive_qa",
+      "domain": "watcha_main"
+    },
+    "pred": {
+      "track": "fast",
+      "intent": "interpretive_qa",
+      "domain": "watcha_main",
+      "summary": "왓챠 플랫폼의 재시청률 현황 및 패턴 분석 요청"
+    },
+    "elapsed": 4.8593010902404785
+  },
+  {
+    "q": "최근 분석 결과 마크다운 리포트",
+    "exp": {
+      "track": "slow",
+      "intent": "report",
+      "domain": "unknown"
+    },
+    "pred": {
+      "track": "slow",
+      "intent": "report",
+      "domain": "unknown",
+      "summary": "최근 분석 결과를 마크다운 형식의 보고서로 정리 요청"
+    },
+    "elapsed": 6.60304856300354
+  },
+  {
+    "q": "피디아 TOP 10 별점 영화 보여줘",
+    "exp": {
+      "track": "fast",
+      "intent": "narrow_top_n",
+      "domain": "pedia"
+    },
+    "pred": {
+      "track": "fast",
+      "intent": "narrow_top_n",
+      "domain": "pedia",
+      "summary": "피디아에서 별점 기준 상위 10개 영화 목록 조회"
+    },
+    "elapsed": 9.48406457901001
+  },
+  {
+    "q": "rec_galaxy 별점 분포",
+    "exp": {
+      "track": "fast",
+      "intent": "narrow_distribution",
+      "domain": "pedia"
+    },
+    "pred": {
+      "track": "fast",
+      "intent": "narrow_distribution",
+      "domain": "pedia",
+      "summary": "rec_galaxy 데이터의 별점(평점) 분포 조회"
+    },
+    "elapsed": 6.607371091842651
+  },
+  {
+    "q": "piedia AB test 결과 리포트",
+    "exp": {
+      "track": "slow",
+      "intent": "report",
+      "domain": "pedia"
+    },
+    "pred": {
+      "track": "slow",
+      "intent": "ab_test",
+      "domain": "pedia",
+      "summary": "피디아 도메인 A/B 테스트 결과를 분석하고 보고서로 정리 요청"
+    },
+    "elapsed": 6.6904261112213135
+  },
+  {
+    "q": "피디아 보싶 많이 받은 콘텐츠 TOP 10",
+    "exp": {
+      "track": "fast",
+      "intent": "narrow_top_n",
+      "domain": "pedia"
+    },
+    "pred": {
+      "track": "fast",
+      "intent": "narrow_top_n",
+      "domain": "pedia",
+      "summary": "피디아에서 보고싶어요(보싶) 수가 가장 많은 콘텐츠 TOP 10 조회"
+    },
+    "elapsed": 4.785272836685181
+  },
+  {
+    "q": "안녕",
+    "exp": {
+      "track": "fast",
+      "intent": "small_talk",
+      "domain": "unknown"
+    },
+    "pred": {
+      "track": "fast",
+      "intent": "small_talk",
+      "domain": "unknown",
+      "summary": "사용자 인사"
+    },
+    "elapsed": 4.845374345779419
+  },
+  {
+    "q": "왓챠 본 서비스 일주일 추이",
+    "exp": {
+      "track": "fast",
+      "intent": "narrow_distribution",
+      "domain": "watcha_main"
+    },
+    "pred": {
+      "track": "fast",
+      "intent": "narrow_distribution",
+      "domain": "watcha_main",
+      "summary": "왓챠 본 서비스의 일주일 간 시청/활동 추이 조회"
+    },
+    "elapsed": 5.281610012054443
+  },
+  {
+    "q": "피디아 1인당 평가 수 어떻게 돼?",
+    "exp": {
+      "track": "fast",
+      "intent": "narrow_count",
+      "domain": "pedia"
+    },
+    "pred": {
+      "track": "fast",
+      "intent": "narrow_count",
+      "domain": "pedia",
+      "summary": "피디아 데이터에서 사용자 1인당 평균 평가 수 단일 수치 조회"
+    },
+    "elapsed": 4.670908451080322
+  },
+  {
+    "q": "MARS 콘텐츠 타입별 시청 비율",
+    "exp": {
+      "track": "fast",
+      "intent": "narrow_distribution",
+      "domain": "watcha_main"
+    },
+    "pred": {
+      "track": "fast",
+      "intent": "narrow_distribution",
+      "domain": "watcha_main",
+      "summary": "MARS 데이터에서 콘텐츠 타입별 시청 비율 분포 조회"
+    },
+    "elapsed": 4.942083835601807
+  },
+  {
+    "q": "뭐 할 수 있어?",
+    "exp": {
+      "track": "fast",
+      "intent": "small_talk",
+      "domain": "unknown"
+    },
+    "pred": {
+      "track": "fast",
+      "intent": "small_talk",
+      "domain": "unknown",
+      "summary": "챗봇 기능 문의"
+    },
+    "elapsed": 5.783185005187988
+  },
+  {
+    "q": "데이터 좀 분석해줘",
+    "exp": {
+      "track": "slow",
+      "intent": "broad_eda",
+      "domain": "unknown"
+    },
+    "pred": {
+      "track": "slow",
+      "intent": "broad_eda",
+      "domain": "unknown",
+      "summary": "데이터 분석 요청 — 구체적인 도메인/지표 미지정, 전반적 EDA 또는 탐색 의도로 추정"
+    },
+    "elapsed": 5.417696952819824
+  },
+  {
+    "q": "rec_galaxy 어제 활성 유저",
+    "exp": {
+      "track": "fast",
+      "intent": "narrow_count",
+      "domain": "pedia"
+    },
+    "pred": {
+      "track": "fast",
+      "intent": "narrow_count",
+      "domain": "pedia",
+      "summary": "rec_galaxy 어제(2026-05-24) 기준 활성 유저 수 단일 수치 조회"
+    },
+    "elapsed": 6.169888496398926
+  },
+  {
+    "q": "성인+ 어제 총매출",
+    "exp": {
+      "track": "fast",
+      "intent": "narrow_count",
+      "domain": "adult"
+    },
+    "pred": {
+      "track": "fast",
+      "intent": "narrow_count",
+      "domain": "adult",
+      "summary": "성인+ 도메인의 어제(2026-05-24) 총매출 단일 수치 조회"
+    },
+    "elapsed": 5.0390849113464355
+  },
+  {
+    "q": "rec_adult heavy buyer TOP 10",
+    "exp": {
+      "track": "fast",
+      "intent": "narrow_top_n",
+      "domain": "adult"
+    },
+    "pred": {
+      "track": "fast",
+      "intent": "narrow_top_n",
+      "domain": "adult",
+      "summary": "rec_adult 도메인에서 구매량 기준 heavy buyer 상위 10명 사용자 조회"
+    },
+    "elapsed": 6.661190748214722
+  },
+  {
+    "q": "graph_modeling EDA 리포트",
+    "exp": {
+      "track": "slow",
+      "intent": "broad_eda",
+      "domain": "watcha_main"
+    },
+    "pred": {
+      "track": "slow",
+      "intent": "broad_eda",
+      "domain": "watcha_main",
+      "summary": "graph_modeling 데이터 전체 EDA 분석 및 리포트 생성 요청"
+    },
+    "elapsed": 20.130624532699585
+  },
+  {
+    "q": "피디아 데이터 전체 특성 분석",
+    "exp": {
+      "track": "slow",
+      "intent": "broad_eda",
+      "domain": "pedia"
+    },
+    "pred": {
+      "track": "slow",
+      "intent": "broad_eda",
+      "domain": "pedia",
+      "summary": "피디아 데이터 전체 특성에 대한 종합 EDA 분석 요청"
+    },
+    "elapsed": 8.63791561126709
+  },
+  {
+    "q": "어떤 도메인이 가장 활발해?",
+    "exp": {
+      "track": "fast",
+      "intent": "interpretive_qa",
+      "domain": "unknown"
+    },
+    "pred": {
+      "track": "fast",
+      "intent": "interpretive_qa",
+      "domain": "unknown",
+      "summary": "여러 도메인 중 활동이 가장 활발한 도메인이 어디인지 비교 분석 요청"
+    },
+    "elapsed": 5.099456310272217
+  },
+  {
+    "q": "성인관 1인당 구매 매출",
+    "exp": {
+      "track": "fast",
+      "intent": "narrow_count",
+      "domain": "adult"
+    },
+    "pred": {
+      "track": "fast",
+      "intent": "narrow_count",
+      "domain": "adult",
+      "summary": "성인관 사용자 1인당 평균 구매 매출 조회"
+    },
+    "elapsed": 7.708061695098877
+  },
+  {
+    "q": "피디아 long tail 분석",
+    "exp": {
+      "track": "fast",
+      "intent": "interpretive_qa",
+      "domain": "pedia"
+    },
+    "pred": {
+      "track": "fast",
+      "intent": "interpretive_qa",
+      "domain": "pedia",
+      "summary": "피디아 데이터에서 long tail 현상 분석 (해석·패턴 파악 요구)"
+    },
+    "elapsed": 5.170891284942627
+  },
+  {
+    "q": "우리 모델 성능 알려줘",
+    "exp": {
+      "track": "slow",
+      "intent": "interpretive_qa",
+      "domain": "unknown"
+    },
+    "pred": {
+      "track": "fast",
+      "intent": "interpretive_qa",
+      "domain": "unknown",
+      "summary": "ML 모델의 전반적인 성능 지표 문의"
+    },
+    "elapsed": 17.045893907546997
+  },
+  {
+    "q": "rec_adult 매출 분포 분석",
+    "exp": {
+      "track": "fast",
+      "intent": "narrow_distribution",
+      "domain": "adult"
+    },
+    "pred": {
+      "track": "fast",
+      "intent": "narrow_distribution",
+      "domain": "adult",
+      "summary": "rec_adult 도메인의 매출 분포 분석 요청"
+    },
+    "elapsed": 5.364073991775513
+  },
+  {
+    "q": "rec_galaxy EDA 리포트 만들어줘",
+    "exp": {
+      "track": "slow",
+      "intent": "broad_eda",
+      "domain": "pedia"
+    },
+    "pred": {
+      "track": "slow",
+      "intent": "broad_eda",
+      "domain": "unknown",
+      "summary": "분류 결과 파싱 실패"
+    },
+    "elapsed": 20.515649557113647
+  },
+  {
+    "q": "rec_galaxy 큰손 유저 TOP 5",
+    "exp": {
+      "track": "fast",
+      "intent": "narrow_top_n",
+      "domain": "pedia"
+    },
+    "pred": {
+      "track": "fast",
+      "intent": "narrow_top_n",
+      "domain": "pedia",
+      "summary": "rec_galaxy 도메인에서 활동량이 가장 많은 상위 5명의 유저 조회"
+    },
+    "elapsed": 5.475635766983032
+  },
+  {
+    "q": "피디아 인기 감독 보여줘",
+    "exp": {
+      "track": "fast",
+      "intent": "narrow_top_n",
+      "domain": "pedia"
+    },
+    "pred": {
+      "track": "fast",
+      "intent": "narrow_top_n",
+      "domain": "pedia",
+      "summary": "피디아 데이터에서 인기 감독 TOP N 조회"
+    },
+    "elapsed": 4.366626262664795
+  },
+  {
+    "q": "성인+ rental TOP 10",
+    "exp": {
+      "track": "fast",
+      "intent": "narrow_top_n",
+      "domain": "adult"
+    },
+    "pred": {
+      "track": "fast",
+      "intent": "narrow_top_n",
+      "domain": "adult",
+      "summary": "성인+ 콘텐츠 rental 기준 TOP 10 조회"
+    },
+    "elapsed": 5.701089143753052
+  },
+  {
+    "q": "adult CVR click→구매",
+    "exp": {
+      "track": "fast",
+      "intent": "narrow_count",
+      "domain": "adult"
+    },
+    "pred": {
+      "track": "fast",
+      "intent": "narrow_count",
+      "domain": "adult",
+      "summary": "성인 도메인에서 클릭 → 구매 전환율(CVR) 단일 수치 조회"
+    },
+    "elapsed": 7.581640720367432
+  },
+  {
+    "q": "rec_galaxy 평가율 추이",
+    "exp": {
+      "track": "fast",
+      "intent": "narrow_distribution",
+      "domain": "pedia"
+    },
+    "pred": {
+      "track": "fast",
+      "intent": "narrow_distribution",
+      "domain": "pedia",
+      "summary": "rec_galaxy 데이터에서 평가율의 시간별 추이 분석"
+    },
+    "elapsed": 5.346940755844116
+  }
+]

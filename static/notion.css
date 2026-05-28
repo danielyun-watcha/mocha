@@ -1,0 +1,282 @@
+/* ═══════════════════════ Notion-style overlay ═══════════════════════
+   원칙: (1) tonal BG로만 카드 구분 (border/shadow 없음)
+        (2) generous vertical spacing (h2 위 큰, 아래 작은)
+        (3) 색은 tag/pill만 — 본문은 모노톤
+   ═════════════════════════════════════════════════════════════════ */
+
+/* ── Section 헤딩 강약 — h2/h3 비대칭 마진 ── */
+.kpi-section-title,
+.kpi-panel h3,
+.kpi-panel .panel-head h3 {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  margin: 0 0 12px 0;
+}
+.kpi-view h2,
+.welcome h2 {
+  margin: 36px 0 6px;
+  letter-spacing: -0.02em;
+  font-weight: 700;
+}
+
+/* ── 패널 = tonal BG only, no border/shadow ── */
+.kpi-panel {
+  background: var(--panel);
+  border: 0 !important;
+  box-shadow: none !important;
+  border-radius: 6px !important;
+  padding: 20px 22px !important;
+}
+.kpi-cards-hero { background: transparent !important; }
+
+/* ── Hero card — flatter, tonal ── */
+.kpi-card {
+  background: var(--panel-soft) !important;
+  border: 0 !important;
+  box-shadow: none !important;
+  border-radius: 6px !important;
+}
+.kpi-card:hover {
+  background: var(--panel-hover) !important;
+  transform: none !important;
+}
+.kpi-card-label {
+  font-size: 12px !important;
+  color: var(--ink-faint) !important;
+  font-weight: 500 !important;
+  letter-spacing: 0;
+  text-transform: none !important;
+}
+.kpi-card-value {
+  font-size: 26px !important;
+  font-weight: 700 !important;
+  letter-spacing: -0.02em !important;
+  font-feature-settings: 'tnum' !important;
+}
+.kpi-card-delta { font-size: 11px !important; }
+
+/* ── 표 — notion-style: 가는 단일선만 ── */
+.kpi-view table,
+.msg-content table {
+  border-collapse: collapse;
+  border: 0;
+}
+.kpi-view th, .kpi-view td,
+.msg-content th, .msg-content td {
+  border: 0 !important;
+  border-bottom: 1px solid rgba(255,255,255,0.06) !important;
+  padding: 9px 14px !important;
+}
+.kpi-view th, .msg-content th {
+  background: transparent !important;
+  font-weight: 500 !important;
+  font-size: 12px !important;
+  color: var(--ink-faint) !important;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* ── Divider — 단일 가는 선 ── */
+.kpi-divider, hr {
+  border: 0;
+  border-top: 1px solid rgba(255,255,255,0.08);
+  margin: 32px 0;
+}
+
+/* ── 강조 — color 대신 weight ── */
+.msg-content strong { font-weight: 600; color: var(--ink); }
+.msg-content em { font-style: italic; color: var(--ink); }
+
+/* ── Sidebar (rail) — flatter ── */
+.rail {
+  background: var(--bg) !important;
+  border-right: 1px solid var(--border-soft) !important;
+}
+.rail-item {
+  padding: 6px 10px !important;
+  border-radius: 4px !important;
+}
+.rail-item.active {
+  background: rgba(255,255,255,0.06) !important;
+  font-weight: 500;
+  color: var(--ink) !important;
+}
+.rail-item:hover:not(.active) {
+  background: rgba(255,255,255,0.03) !important;
+}
+
+/* ── Chat sidebar (sessions) ── */
+.sidebar {
+  background: var(--bg) !important;
+  border-right: 1px solid var(--border-soft) !important;
+}
+.session-item {
+  padding: 6px 8px !important;
+  border-radius: 4px !important;
+  font-size: 13px !important;
+  border: 0 !important;
+}
+.session-item.active {
+  background: rgba(255,255,255,0.06) !important;
+}
+
+/* ── KPI table rows — alternate tonal ── */
+.kpi-table tbody tr:hover {
+  background: rgba(255,255,255,0.025) !important;
+}
+
+/* ── Content title 가독성 — pill 옆 title 강조 + 1줄 ellipsis ── */
+.t-content {
+  white-space: nowrap !important;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 320px;
+}
+.t-content .t-title {
+  display: inline-block;
+  vertical-align: middle;
+  font-weight: 500;
+  color: var(--ink);
+  line-height: 1.4;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Top-N list (top contents/genres/actors) — flat ── */
+.top10-list, .top-list {
+  background: transparent !important;
+}
+.top10-list li, .top-list li {
+  border: 0 !important;
+  border-bottom: 1px solid rgba(255,255,255,0.05) !important;
+  padding: 8px 0 !important;
+}
+.top10-list li:last-child, .top-list li:last-child {
+  border-bottom: 0 !important;
+}
+
+/* ── Tag/pill (gateway-chip, action chips) — 유일하게 색 허용 ── */
+.gateway-chip {
+  border-radius: 12px !important;
+  padding: 3px 10px !important;
+  font-size: 11px !important;
+  font-weight: 500 !important;
+  border: 0 !important;
+}
+
+/* ── Chat assistant avatar = mocha 얼굴 (transparent PNG) ── */
+.avatar.assistant {
+  background: url("/static/mocha-avatar.png") no-repeat center / contain !important;
+  width: 36px !important; height: 36px !important;
+  border-radius: 50% !important;
+  box-shadow: none !important;
+}
+.avatar.assistant > * { display: none !important; }
+
+/* ── 답변 메시지 — assistant bubble flatter, more spacing ── */
+.msg-row.assistant .msg-content {
+  background: var(--panel-soft) !important;
+  border: 0 !important;
+  padding: 14px 18px !important;
+  line-height: 1.7 !important;
+}
+
+/* ── Rail "MOCHA" icon (Agent 위치) ── */
+.rail-mocha-icon {
+  display: inline-block;
+  width: 22px; height: 22px;
+  background: url("/static/mocha-avatar.png") no-repeat center / contain;
+  vertical-align: middle;
+}
+
+/* ── Chat view 우상단 theme toggle (dashboard와 동일 위치/스타일) ── */
+.chat-header {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 20px 0;
+  flex-shrink: 0;
+}
+/* /archive 저장 버튼 — 메시지 1개 이상 있을 때만 노출 */
+.archive-btn {
+  background: var(--panel-soft);
+  color: var(--ink);
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+  display: none;  /* JS toggles when messages > 0 */
+}
+.archive-btn.visible { display: inline-block; }
+.archive-btn:hover { background: var(--panel-hover); border-color: var(--accent-soft); }
+.archive-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.archive-btn.saved { background: var(--accent); color: white; border-color: var(--accent); }
+.chat-header .theme-toggle .theme-icon-light { display: none; }
+.chat-header .theme-toggle .theme-icon-dark { display: inline; }
+[data-theme="dark"] .chat-header .theme-toggle .theme-icon-dark { display: none; }
+[data-theme="dark"] .chat-header .theme-toggle .theme-icon-light { display: inline; }
+.msg-row.user .msg-content {
+  background: var(--accent) !important;
+  padding: 10px 14px !important;
+  border-radius: 14px !important;
+  border-top-right-radius: 4px !important;
+}
+.msg-content h1, .msg-content h2, .msg-content h3 {
+  margin: 1.2em 0 0.3em !important;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+}
+.msg-content h1 { font-size: 1.5em !important; font-weight: 700 !important; }
+.msg-content h2 {
+  font-size: 1.2em !important;
+  font-weight: 700 !important;
+  color: var(--ink) !important;
+  margin-top: 1.6em !important;
+  margin-bottom: 0.5em !important;
+  letter-spacing: -0.01em !important;
+}
+.msg-content h3 { font-size: 1.05em !important; font-weight: 600 !important; color: var(--ink) !important; }
+
+/* footer 데이터 출처 — muted callout */
+.msg-content hr + p,
+.msg-content blockquote:last-child {
+  color: var(--ink-faint);
+  font-size: 12px;
+  border-left: 0;
+  padding-left: 0;
+}
+
+/* ── 차트/sparkline — 강조색 줄임 ── */
+.spark-line { opacity: 0.85; }
+
+/* ── Light theme 보정 ── */
+[data-theme="light"] .kpi-view th,
+[data-theme="light"] .kpi-view td,
+[data-theme="light"] .msg-content th,
+[data-theme="light"] .msg-content td {
+  border-bottom-color: rgba(0,0,0,0.06) !important;
+}
+[data-theme="light"] .kpi-divider,
+[data-theme="light"] hr {
+  border-top-color: rgba(0,0,0,0.08);
+}
+[data-theme="light"] .rail-item.active,
+[data-theme="light"] .session-item.active {
+  background: rgba(0,0,0,0.04) !important;
+}
+[data-theme="light"] .rail-item:hover:not(.active) {
+  background: rgba(0,0,0,0.025) !important;
+}
+[data-theme="light"] .top10-list li,
+[data-theme="light"] .top-list li {
+  border-bottom-color: rgba(0,0,0,0.05) !important;
+}

@@ -3,71 +3,377 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>MOCHA — 데이터 분석 AI</title>
-  <meta name="description" content="자연어로 묻는 Watcha 데이터 분석 AI">
+  <title>MOCHA — Watcha 데이터 분석</title>
+  <meta name="description" content="자연어로 묻는 Watcha 데이터 분석 AI + KPI 대시보드">
   <meta name="adp-app-name" content="mocha">
   <meta name="adp-owner" content="daniel">
 
   <link rel="stylesheet" as="style" crossorigin
         href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css">
   <link rel="stylesheet"
-        href="https://cdn.jsdelivr.net/npm/highlight.js@11.10.0/styles/github.min.css">
+        href="https://cdn.jsdelivr.net/npm/highlight.js@11.10.0/styles/github-dark.min.css">
   <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/notion.css">
 
   <script src="https://cdn.jsdelivr.net/npm/marked@14.1.3/marked.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.7/dist/purify.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.10.0/lib/highlight.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 </head>
 <body>
-  <aside class="sidebar">
-    <header class="brand">
-      <span class="logo">☕</span>
-      <h1>MOCHA</h1>
-    </header>
-    <button id="new-session" class="new-btn">+ 새 분석</button>
-    <div id="bulk-bar" class="bulk-bar"></div>
-    <nav class="session-list" id="session-list"></nav>
-    <div class="sidebar-foot">
-      <small>v0.1 MVP · 자연어로 묻는 Watcha 데이터 분석 AI</small>
-    </div>
-  </aside>
 
-  <main class="chat">
-    <div class="messages" id="messages">
-      <div class="welcome">
-        <div class="welcome-logo">☕</div>
-        <h2>MOCHA</h2>
-        <p>자연어로 Watcha 데이터에 대해 물어보세요.</p>
-        <div class="examples">
-          <button class="example">graph_modeling 데이터 EDA 리포트 만들어줘</button>
-          <button class="example">큰손 유저는 누구야?</button>
-          <button class="example">장르 분석해줘</button>
-          <button class="example">노션에 올려줘</button>
+  <!-- ━━━ Primary nav rail (GALAXY · MARS · ADULT · Agent) ━━━ -->
+  <nav class="rail">
+    <div class="rail-brand">
+      <span class="rail-logo" role="img" aria-label="MOCHA"></span>
+      <span class="rail-brand-text">MOCHA</span>
+    </div>
+    <button class="rail-item" data-view="galaxy">
+      <span class="rail-icon">📚</span><span class="rail-label">GALAXY</span>
+      <span class="rail-sub">왓챠피디아</span>
+    </button>
+    <button class="rail-item" data-view="mars">
+      <span class="rail-icon">🎬</span><span class="rail-label">MARS</span>
+      <span class="rail-sub">왓챠</span>
+    </button>
+    <button class="rail-item" data-view="adult">
+      <span class="rail-icon">🔞</span><span class="rail-label">ADULT</span>
+      <span class="rail-sub">성인+</span>
+    </button>
+    <button class="rail-item" data-view="agent">
+      <span class="rail-icon rail-mocha-icon"></span><span class="rail-label">MOCHA</span>
+      <span class="rail-sub">자연어 분석</span>
+    </button>
+    <div class="rail-foot"><small>v0.2 · Phase 1</small></div>
+  </nav>
+
+
+  <!-- ━━━ KPI dashboard views (galaxy / mars / adult) ━━━ -->
+  <template id="kpi-template">
+    <section class="kpi-view">
+      <header class="kpi-header">
+        <div class="kpi-title-wrap">
+          <h1 class="kpi-title"></h1>
+          <p class="kpi-sub">behavior_logs · daily aggregation · KST</p>
         </div>
+        <div class="kpi-range">
+          <input type="date" class="kpi-start">
+          <span class="kpi-range-sep">~</span>
+          <input type="date" class="kpi-end">
+          <button class="kpi-refresh" type="button">새로고침</button>
+          <button class="theme-toggle" type="button" aria-label="테마 전환" title="테마 전환">
+            <span class="theme-icon-dark">🌙</span>
+            <span class="theme-icon-light">☀️</span>
+          </button>
+        </div>
+      </header>
+
+      <div class="kpi-body">
+        <div class="kpi-main">
+          <p class="kpi-basis-note">
+            모든 카드 / 표 값은 <strong>선택 기간 합계 (count) 또는 비율 (ratio)</strong> 기준.
+            카드 우측 변화율 / 표 <code>DoD</code> = <strong>전일대비</strong> (마지막일 vs 직전일).
+            sparkline / 모든 차트 = <strong>일자별 추이</strong>.
+          </p>
+          <div class="kpi-cards kpi-cards-hero"></div>
+
+          <div class="kpi-panel kpi-panel-insight">
+            <div class="panel-head">
+              <h3>AI 인사이트 <span class="panel-sub">기간 추이 · 도메인 전체 기준 (필터 미반영)</span></h3>
+              <button class="aside-insight-refresh" type="button" title="다시 생성">↻</button>
+            </div>
+            <div class="aside-insight-status">분석 중…</div>
+            <ul class="aside-insight-list"></ul>
+            <p class="aside-insight-meta"></p>
+          </div>
+
+          <div class="kpi-panel kpi-panel-chart">
+            <div class="panel-head">
+              <h3>일자별 이벤트 · 유저 <span class="panel-sub">기간 [start~end]</span></h3>
+              <span class="panel-legend">
+                <span class="dot dot-events"></span>Events
+                <span class="dot dot-users"></span>Users
+              </span>
+            </div>
+            <canvas class="chart-ts"></canvas>
+          </div>
+
+          <div class="kpi-row">
+            <div class="kpi-panel kpi-panel-table">
+              <div class="panel-head">
+                <h3>주요 KPI <span class="panel-sub">값=기간 / DoD=전일대비 / 추이=일자별</span></h3>
+                <button class="kpi-expand-btn" type="button" title="전체 KPI 보기">⤢ 전체</button>
+              </div>
+              <table class="kpi-metric-table">
+                <thead><tr>
+                  <th class="m-label">지표</th>
+                  <th class="m-value">값</th>
+                  <th class="m-last">최근</th>
+                  <th class="m-delta" title="전일대비 (Day-over-Day)">DoD</th>
+                  <th class="m-spark">추이</th>
+                </tr></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+            <div class="kpi-panel kpi-panel-actions">
+              <div class="panel-head"><h3>액션 분포 <span class="panel-sub">기간 합 · % = 전체 대비</span></h3></div>
+              <canvas class="chart-actions"></canvas>
+            </div>
+          </div>
+
+          <div class="kpi-row kpi-row-eda">
+            <div class="kpi-panel kpi-panel-rating">
+              <div class="panel-head"><h3>평점 분포 <span class="panel-sub">기간 / rating_prediction / ★1-10</span></h3></div>
+              <canvas class="chart-rating"></canvas>
+            </div>
+            <div class="kpi-panel kpi-panel-hour">
+              <div class="panel-head"><h3>시간대 활동 <span class="panel-sub">기간 합 · KST 0-23시</span></h3></div>
+              <canvas class="chart-hour"></canvas>
+            </div>
+            <div class="kpi-panel kpi-panel-pareto">
+              <div class="panel-head"><h3>Pareto 곡선 <span class="panel-sub">상위 X% 콘텐츠 → 누적 share%</span></h3></div>
+              <canvas class="chart-pareto"></canvas>
+            </div>
+          </div>
+
+          <div class="kpi-panel kpi-panel-revenue" hidden>
+            <div class="panel-head">
+              <h3>매출 <span class="panel-sub">RENTAL+POSSESSION · 기간 합계 · 막대=일자별</span></h3>
+            </div>
+            <div class="revenue-headline">
+              <div class="rev-card">
+                <div class="rev-label">총매출</div>
+                <div class="rev-value rev-total">—</div>
+              </div>
+              <div class="rev-card">
+                <div class="rev-label">1인당 매출 <span class="rev-sub">구매자 기준</span></div>
+                <div class="rev-value rev-arppu">—</div>
+              </div>
+              <div class="rev-card">
+                <div class="rev-label">구매 유저</div>
+                <div class="rev-value rev-paying">—</div>
+              </div>
+            </div>
+            <canvas class="chart-revenue"></canvas>
+          </div>
+
+          <!-- 4-col bottom row — 도메인별 panel hidden -->
+          <div class="kpi-row kpi-row-4col">
+            <div class="kpi-panel kpi-panel-top">
+              <div class="panel-head"><h3>TOP 10 콘텐츠 <span class="panel-sub">기간 events 기준</span></h3></div>
+              <table class="kpi-table top10-table top10-contents">
+                <thead><tr>
+                  <th class="t-rank">#</th>
+                  <th class="t-content">Content</th>
+                  <th class="t-events">Events</th>
+                </tr></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+            <div class="kpi-panel kpi-panel-genre">
+              <div class="panel-head"><h3>TOP 10 장르 <span class="panel-sub">기간 events 기준</span></h3></div>
+              <table class="kpi-table top10-table top10-genres">
+                <thead><tr>
+                  <th class="t-rank">#</th>
+                  <th class="t-content">장르</th>
+                  <th class="t-events">Events</th>
+                </tr></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+            <div class="kpi-panel kpi-panel-rev-top">
+              <div class="panel-head"><h3>TOP 매출 아이템 <span class="panel-sub">기간 매출 합 기준</span></h3></div>
+              <table class="kpi-table top10-table top10-rev-contents">
+                <thead><tr>
+                  <th class="t-rank">#</th>
+                  <th class="t-content">Content</th>
+                  <th class="t-events">매출</th>
+                </tr></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+            <div class="kpi-panel kpi-panel-actor">
+              <div class="panel-head"><h3>인기 배우 <span class="panel-sub">구매 가중</span></h3></div>
+              <table class="kpi-table top10-table top10-actors">
+                <thead><tr>
+                  <th class="t-rank">#</th>
+                  <th class="t-content">Actor ID</th>
+                  <th class="t-events">Count</th>
+                </tr></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+            <div class="kpi-panel kpi-panel-director">
+              <div class="panel-head"><h3>인기 감독 <span class="panel-sub">구매 가중</span></h3></div>
+              <table class="kpi-table top10-table top10-directors">
+                <thead><tr>
+                  <th class="t-rank">#</th>
+                  <th class="t-content">Director ID</th>
+                  <th class="t-events">Count</th>
+                </tr></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="kpi-panel kpi-panel-donut" hidden>
+            <div class="panel-head"><h3>콘텐츠 타입 분포 <span class="panel-sub">기간 events 합</span></h3></div>
+            <div class="donut-wrap">
+              <div class="donut-canvas-box"><canvas class="chart-ctype"></canvas></div>
+              <ul class="donut-legend"></ul>
+            </div>
+          </div>
+
+          <footer class="kpi-foot">
+            <span class="kpi-files-inline"></span>
+            <span class="kpi-elapsed"></span>
+          </footer>
+        </div>
+
+        <aside class="kpi-aside">
+          <div class="aside-panel">
+            <div class="aside-head"><h4>요약</h4><span class="aside-r">R</span></div>
+            <dl class="aside-meta">
+              <dt>이벤트</dt><dd class="meta-events">—</dd>
+              <dt>유저</dt><dd class="meta-users">—</dd>
+              <dt>콘텐츠</dt><dd class="meta-contents">—</dd>
+              <dt>기간</dt><dd class="meta-period">—</dd>
+            </dl>
+            <div class="aside-source-block">
+              <span class="aside-source-label">DATA SOURCE</span>
+              <p class="aside-source"></p>
+            </div>
+          </div>
+
+          <div class="aside-panel aside-ct-panel" hidden>
+            <div class="aside-head">
+              <h4>콘텐츠 타입</h4>
+              <button class="aside-reset" type="button" title="전체 선택">전체</button>
+            </div>
+            <ul class="aside-checklist aside-ct-list"></ul>
+          </div>
+
+          <div class="aside-panel aside-at-panel" hidden>
+            <div class="aside-head">
+              <h4>액션</h4>
+              <button class="aside-reset-at" type="button" title="전체 선택">전체</button>
+            </div>
+            <ul class="aside-checklist aside-at-list"></ul>
+          </div>
+
+        </aside>
+      </div>
+    </section>
+  </template>
+
+  <!-- ━━━ All-KPI modal (full table with sparklines) ━━━ -->
+  <div class="kpi-modal" id="kpi-all-modal" hidden>
+    <div class="kpi-modal-card kpi-all-card">
+      <header class="kpi-modal-head">
+        <div>
+          <h2>전체 KPI</h2>
+          <p class="kpi-modal-sub" id="kpi-all-sub">—</p>
+        </div>
+        <button class="kpi-modal-close" type="button" data-target="kpi-all-modal" aria-label="닫기">&times;</button>
+      </header>
+      <div class="kpi-all-scroll">
+        <table class="kpi-metric-table kpi-all-table">
+          <thead><tr>
+            <th class="m-label">지표</th>
+            <th class="m-value">값</th>
+            <th class="m-last">최근</th>
+            <th class="m-delta" title="전일대비 (Day-over-Day)">DoD</th>
+            <th class="m-spark">일자별 추이</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <p class="kpi-all-hint">행을 클릭하면 큰 막대그래프로 자세히 볼 수 있습니다.</p>
+    </div>
+  </div>
+
+  <!-- ━━━ KPI detail modal (single KPI bar chart) ━━━ -->
+  <div class="kpi-modal" id="kpi-modal" hidden>
+    <div class="kpi-modal-card">
+      <header class="kpi-modal-head">
+        <div>
+          <h2 class="kpi-modal-title">—</h2>
+          <p class="kpi-modal-sub">일자별 추이</p>
+        </div>
+        <button class="kpi-modal-close" type="button" aria-label="닫기">&times;</button>
+      </header>
+      <div class="kpi-modal-controls">
+        <span class="kpi-modal-domain">—</span>
+        <span class="kpi-modal-sep">·</span>
+        <input type="date" class="kpi-modal-start">
+        <span>~</span>
+        <input type="date" class="kpi-modal-end">
+        <button class="kpi-modal-refresh" type="button">조회</button>
+        <span class="kpi-modal-elapsed"></span>
+      </div>
+      <div class="kpi-modal-summary">
+        <span class="kpi-modal-summary-label">기간 합/평균</span>
+        <span class="kpi-modal-summary-value">—</span>
+      </div>
+      <div class="kpi-modal-chart-wrap">
+        <canvas id="kpi-modal-chart"></canvas>
       </div>
     </div>
+  </div>
 
-    <form id="chat-form" class="composer-wrap">
-      <div class="composer">
-        <textarea
-          id="prompt"
-          placeholder="데이터에 대해 자연어로 물어보세요. (Enter 전송, Shift+Enter 줄바꿈)"
-          rows="1"
-          autofocus
-        ></textarea>
-        <button type="submit" id="send-btn" aria-label="전송">
-          <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor">
-            <path d="M3 11l18-8-8 18-2-8z"/>
-          </svg>
-        </button>
-      </div>
-      <p class="composer-hint">MOCHA는 실수할 수 있어요. 중요한 분석은 출처를 확인해주세요.</p>
-    </form>
-    <footer class="page-footer">
-      <p class="adp-service-desc">자연어로 묻는 Watcha 데이터 분석 AI — mocha.watcha.io</p>
-    </footer>
+  <main class="content">
+    <div class="view" id="view-galaxy" data-view="galaxy" hidden></div>
+    <div class="view" id="view-mars" data-view="mars" hidden></div>
+    <div class="view" id="view-adult" data-view="adult" hidden></div>
+
+    <!-- ━━━ Agent view (existing chat) ━━━ -->
+    <div class="view view-agent" id="view-agent" data-view="agent" hidden>
+      <aside class="sidebar">
+        <button id="new-session" class="new-btn">+ 새 분석</button>
+        <div id="bulk-bar" class="bulk-bar"></div>
+        <nav class="session-list" id="session-list"></nav>
+        <div class="sidebar-foot"><small>세션 · 자연어 분석</small></div>
+      </aside>
+      <section class="chat">
+        <div class="chat-header">
+          <button id="archive-btn" class="archive-btn" type="button" title="현재 대화를 /archive 에 저장">
+            📦 /archive 에 저장
+          </button>
+          <button class="theme-toggle" type="button" aria-label="테마 전환" title="테마 전환">
+            <span class="theme-icon-dark">🌙</span>
+            <span class="theme-icon-light">☀️</span>
+          </button>
+        </div>
+        <div class="messages" id="messages">
+          <div class="welcome">
+            <span class="welcome-logo" role="img" aria-label="MOCHA"></span>
+            <h2>안녕! 난 MOCHA야</h2>
+            <p>자연어로 Watcha 데이터에 대해 물어보세요.</p>
+            <div class="examples">
+              <button class="example">🎬 Mars 최근 30일 인기 장르 차트로 보여줘</button>
+              <button class="example">💰 성인관 최다 결제 유저는?</button>
+              <button class="example">⭐ 피디아 평점 높은 영화 TOP 10</button>
+              <button class="example">🎥 왓챠 인기 감독 TOP 5 그래프로</button>
+            </div>
+          </div>
+        </div>
+        <form id="chat-form" class="composer-wrap">
+          <div class="composer">
+            <textarea id="prompt" placeholder="데이터에 대해 자연어로 물어보세요 (Enter 전송, Shift+Enter 줄바꿈)" rows="1"></textarea>
+            <button type="submit" id="send-btn" aria-label="전송">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor">
+                <path d="M3 11l18-8-8 18-2-8z"/>
+              </svg>
+            </button>
+          </div>
+          <p class="composer-hint">MOCHA는 실수할 수 있어요. 중요한 분석은 출처를 확인해주세요.</p>
+        </form>
+      </section>
+    </div>
   </main>
 
+  <script src="/static/i18n.js"></script>
+  <script src="/static/dashboard.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>

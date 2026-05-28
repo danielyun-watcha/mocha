@@ -1,12 +1,37 @@
+# Python
 __pycache__/
 *.py[cod]
 *.egg-info/
 .venv/
 venv/
+
+# Secrets
 .env
 .env.local
+*.credentials.json
+
+# Logs / runtime cache
 .cf-tunnel.log
 *.log
-.DS_Store
+_runtime/pgdata/
+_runtime/server.log
+_runtime/*.feather
+_runtime/cache/
+_runtime/*.pkl
+_runtime/*.sse
+
+# Tests / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Large source images (PNG outputs are tracked; raw generated ones are not)
+Gemini_Generated_Image_*.png
+스크린샷*.png
+static/mascot-full.png
+
+# Editor / OS
 .idea/
 .vscode/
+.DS_Store
+Thumbs.db
