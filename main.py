@@ -94,8 +94,6 @@ class _Settings:
     MAX_BUDGET_USD: float = float(os.environ.get("MOCHA_MAX_BUDGET_USD", "3.0"))
     FAST_INLINE_MAX_DAYS: int = int(os.environ.get("MOCHA_FAST_INLINE_MAX_DAYS", "90"))
     OAUTH_CRED_PATH: Path = Path(os.environ.get("CLAUDE_OAUTH_CRED", "/root/.claude/.credentials.json"))
-    AUTH_USER: str | None = os.environ.get("MOCHA_AUTH_USER")
-    AUTH_PASS: str | None = os.environ.get("MOCHA_AUTH_PASS")
     SESSION_RETENTION_DAYS: int = int(os.environ.get("MOCHA_SESSION_RETENTION_DAYS", "7"))
     CHART_RETENTION_HOURS: int = int(os.environ.get("MOCHA_CHART_RETENTION_HOURS", "24"))
 
@@ -875,61 +873,6 @@ async def correlation_and_cache(request, call_next):
         except Exception:
             pass
     return response
-
-
-# Basic auth — public tunnel 보안.
-# 우선순위:
-#   1) MOCHA_AUTH_DISABLED=1  → off (dev/local 명시적 opt-out)
-#   2) MOCHA_AUTH_USER+PASS 설정 → 그 값 사용
-#   3) 아무것도 없음 → 자동 생성 user=mocha, pass=random_8 — server log 에 출력
-_AUTH_DISABLED = os.environ.get("MOCHA_AUTH_DISABLED", "0") == "1"
-_AUTH_USER = os.environ.get("MOCHA_AUTH_USER")
-_AUTH_PASS = os.environ.get("MOCHA_AUTH_PASS")
-if not _AUTH_DISABLED:
-    import base64
-    import secrets as _secrets
-    from fastapi.responses import Response
-
-    if not _AUTH_USER:
-        _AUTH_USER = "mocha"
-    if not _AUTH_PASS:
-        _AUTH_PASS = _secrets.token_urlsafe(6)  # ~8 chars
-        log.warning(
-            "\n%s\n[AUTH] auto-generated credentials (env not set):\n"
-            "       user: %s\n       pass: %s\n"
-            "       set MOCHA_AUTH_DISABLED=1 to disable (NOT recommended for tunnels).\n%s",
-            "=" * 60, _AUTH_USER, _AUTH_PASS, "=" * 60,
-        )
-    else:
-        log.info("[auth] basic auth enabled for user=%s (env)", _AUTH_USER)
-
-    _EXPECTED = "Basic " + base64.b64encode(f"{_AUTH_USER}:{_AUTH_PASS}".encode()).decode()
-
-    # 보호 대상: chatbot 관련 경로만. KPI dashboard 는 open.
-    # - /api/sessions, /api/sessions/*  (세션 CRUD, 채팅, 내보내기 모두)
-    # - /api/usage  (token 사용량 — 운영 정보)
-    _PROTECTED_PREFIXES = ("/api/sessions", "/api/usage")
-
-    @app.middleware("http")
-    async def basic_auth(request, call_next):
-        path = request.url.path
-        # open: /, /static, /health, /api/kpi/*, /metrics, /eda-files
-        needs_auth = any(path == p or path.startswith(p + "/") or path == p
-                         for p in _PROTECTED_PREFIXES) or \
-                     path.startswith("/api/sessions")
-        if not needs_auth:
-            return await call_next(request)
-        auth = request.headers.get("authorization", "")
-        if not _secrets.compare_digest(auth, _EXPECTED):
-            return Response(
-                content="auth required",
-                status_code=401,
-                headers={"WWW-Authenticate": 'Basic realm="MOCHA Chatbot"'},
-            )
-        return await call_next(request)
-    log.info("[auth] protecting chatbot routes only (KPI dashboard is open)")
-else:
-    log.warning("[auth] DISABLED via MOCHA_AUTH_DISABLED=1 — site is OPEN")
 
 
 @app.get("/health")
