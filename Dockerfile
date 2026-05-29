@@ -26,11 +26,13 @@ RUN ln -s /usr/local/lib/node_modules/@anthropic-ai/claude-code/cli.js /usr/loca
 COPY --from=deps /root/.local /root/.local
 ENV PATH=/root/.local/bin:$PATH
 
-COPY main.py ./
+COPY main.py kpi.py oauth_creds.py ./
 COPY agents ./agents
 COPY migrations ./migrations
 COPY static ./static
 COPY plugins ./plugins
+COPY prompts ./prompts
+COPY _runtime/prewarm_one.py ./_runtime/prewarm_one.py
 
 ENV PORT=8080 \
     PYTHONUNBUFFERED=1 \

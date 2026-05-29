@@ -474,6 +474,39 @@ function renderKpi(domain, data) {
       }).join("")
     : `<tr><td colspan="3" style="color:var(--ink-faint); text-align:center; padding:14px">데이터 없음</td></tr>`;
 
+  // TOP users (활동/소비) — 도메인별 metric 기준
+  const userTop = data.top_users || [];
+  const maxUserEv = userTop.reduce((m, r) => Math.max(m, r.events), 0) || 1;
+  root.querySelector(".top10-users tbody").innerHTML = userTop.length
+    ? userTop.map((row, i) => {
+        const pct = (row.events / maxUserEv) * 100;
+        const label = `user ${row.user_id} · ${row.contents}개 콘텐츠`;
+        return `
+          <tr>
+            <td class="t-rank">${i + 1}</td>
+            <td class="t-content"><span class="t-title">${escapeHtmlD(label)}</span></td>
+            <td class="t-events"><div class="ev-cell"><div class="ev-bar-wrap"><div class="ev-bar" style="width:${pct.toFixed(1)}%"></div></div><span class="ev-num">${fmt.numFull(row.events)}</span></div></td>
+          </tr>`;
+      }).join("")
+    : `<tr><td colspan="3" style="color:var(--ink-faint); text-align:center; padding:14px">데이터 없음</td></tr>`;
+
+  // TOP MEH (negative feedback) contents — galaxy / mars
+  const mehTop = data.top_meh_contents || [];
+  const maxMeh = mehTop.reduce((m, r) => Math.max(m, r.meh_count), 0) || 1;
+  root.querySelector(".top10-meh-contents tbody").innerHTML = mehTop.length
+    ? mehTop.map((row, i) => {
+        const pct = (row.meh_count / maxMeh) * 100;
+        const ct = (row.content || "").split(":")[0];
+        const label = row.title || row.content;
+        return `
+          <tr>
+            <td class="t-rank">${i + 1}</td>
+            <td class="t-content"><span class="ctype-pill" data-ct="${escapeHtmlD(ct)}">${escapeHtmlD(ctNames[ct] || ct)}</span><span class="t-title">${escapeHtmlD(label)}</span></td>
+            <td class="t-events"><div class="ev-cell"><div class="ev-bar-wrap"><div class="ev-bar" style="width:${pct.toFixed(1)}%"></div></div><span class="ev-num">${fmt.numFull(row.meh_count)}</span></div></td>
+          </tr>`;
+      }).join("")
+    : `<tr><td colspan="3" style="color:var(--ink-faint); text-align:center; padding:14px">데이터 없음</td></tr>`;
+
   // TOP revenue contents (ADULT) — title 있으면 title
   const revTop = data.top_revenue_contents || [];
   const maxRev = revTop.reduce((m, r) => Math.max(m, r.revenue), 0) || 1;
@@ -500,6 +533,8 @@ function renderKpi(domain, data) {
   setHidden2(".kpi-panel-top", false);          // 모든 도메인 노출
   setHidden2(".kpi-panel-genre", !sup.genre);
   setHidden2(".kpi-panel-rev-top", !sup.revenue);
+  setHidden2(".kpi-panel-meh-top", !sup.meh_top);
+  setHidden2(".kpi-panel-user-top", !sup.user_top);
   setHidden2(".kpi-panel-actor", !sup.meta_top);
   setHidden2(".kpi-panel-director", !sup.meta_top);
 

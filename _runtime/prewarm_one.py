@@ -9,8 +9,9 @@ import json
 import os
 import sys
 from datetime import date as _date
+from pathlib import Path
 
-sys.path.insert(0, "/home/jupyterhub/jupyter/daniel/mocha")
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import kpi as kpi_mod  # noqa: E402
 
 

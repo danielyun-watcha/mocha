@@ -25,6 +25,10 @@ _runtime/*.sse
 .coverage
 htmlcov/
 
+# Process core dumps
+core
+core.*
+
 # Large source images (PNG outputs are tracked; raw generated ones are not)
 Gemini_Generated_Image_*.png
 스크린샷*.png

@@ -31,7 +31,8 @@ def _parse(cid: str) -> Content | None:
     except (ValueError, KeyError):
         return None
 
-OUT = Path("/home/jupyterhub/jupyter/daniel/mocha/_runtime/content_titles_ko.pkl")
+# Path 는 mocha 디렉토리 (scripts/ 의 상위) 기준 — clone 위치 무관하게 작동.
+OUT = Path(__file__).resolve().parent.parent / "_runtime" / "content_titles_ko.pkl"
 ARCHIVE_DIRS = [
     Path("/archive/rec_galaxy/behavior_logs"),
     Path("/archive/user_bert/behavior_logs2/train"),

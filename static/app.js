@@ -137,7 +137,7 @@ async function deleteSession(id, title) {
   state.selectedIds.delete(id);
   if (state.sessionId === id) {
     state.sessionId = null;
-    clearMessages();
+    renderWelcome();
   }
   await fetchSessions();
 }
@@ -157,10 +157,10 @@ async function deleteSelected() {
   if (failed.length > 0) {
     alert(`${failed.length}개 삭제 실패 (id: ${failed.map((r) => r.id).join(", ")})`);
   }
-  // If active session was in the batch, clear chat
+  // If active session was in the batch, restore the welcome view
   if (ids.includes(state.sessionId)) {
     state.sessionId = null;
-    clearMessages();
+    renderWelcome();
   }
   state.selectedIds.clear();
   await fetchSessions();
@@ -192,6 +192,28 @@ async function loadSession(id) {
 
 function clearMessages() {
   els.messages.innerHTML = "";
+}
+
+function renderWelcome() {
+  // Welcome view — shown when no session is active (fresh load, deletion of
+  // active session, or "new analysis" button).
+  clearMessages();
+  const div = document.createElement("div");
+  div.className = "welcome";
+  div.innerHTML = `
+    <span class="welcome-logo" role="img" aria-label="MOCHA"></span>
+    <h2>안녕! 난 MOCHA야</h2>
+    <p>자연어로 Watcha 데이터에 대해 물어보세요.</p>
+    <div class="examples">
+      <button class="example">🎬 Mars 최근 30일 인기 장르 차트로 보여줘</button>
+      <button class="example">💰 성인관 최다 결제 유저는?</button>
+      <button class="example">⭐ 피디아 평점 높은 영화 TOP 10</button>
+      <button class="example">🎥 왓챠 인기 감독 TOP 5 그래프로</button>
+    </div>
+  `;
+  els.messages.appendChild(div);
+  // .example buttons are handled by the document-level click delegator below;
+  // do NOT attach another onclick here or sendMessage fires twice.
 }
 
 // ---------- message rendering ----------
@@ -256,21 +278,75 @@ const TOOL_SEMANTIC = {
   AskUserQuestion: "❓ 사용자 확인 중...",
 };
 
-function appendToolChip(name) {
+// Pick one short, informative string from a tool's input dict so the user can
+// see "what" is being run, not just the tool name. Returns "" if no field fits.
+function _summarizeToolInput(input) {
+  if (!input || typeof input !== "object") return "";
+  const candidates = ["command", "file_path", "path", "pattern", "query", "url", "description"];
+  for (const k of candidates) {
+    if (typeof input[k] === "string" && input[k]) {
+      const v = input[k].replace(/\s+/g, " ").trim();
+      return v.length > 80 ? v.slice(0, 80) + "…" : v;
+    }
+  }
+  // fallback — first string-valued field
+  for (const k of Object.keys(input)) {
+    if (typeof input[k] === "string" && input[k]) {
+      const v = input[k].replace(/\s+/g, " ").trim();
+      return v.length > 80 ? v.slice(0, 80) + "…" : v;
+    }
+  }
+  return "";
+}
+
+function appendToolChip(name, input) {
   const label = TOOL_SEMANTIC[name] || `🔧 ${name}`;
-  // Merge consecutive identical labels into a count badge
+  const preview = _summarizeToolInput(input);
+  const full = preview ? `${label} · ${preview}` : label;
+  // Merge consecutive identical tool calls; keep latest input preview.
   const last = els.messages.lastElementChild;
   if (last && last.classList.contains("tool-chip") && last.dataset.toolName === name) {
     const count = parseInt(last.dataset.count || "1", 10) + 1;
     last.dataset.count = String(count);
-    last.textContent = `${label} (${count})`;
+    last.textContent = preview ? `${label} · ${preview} (${count})` : `${label} (${count})`;
     return;
   }
   const chip = document.createElement("div");
   chip.className = "tool-chip";
   chip.dataset.toolName = name;
   chip.dataset.count = "1";
-  chip.textContent = label;
+  chip.textContent = full;
+  els.messages.appendChild(chip);
+  scrollToBottom();
+}
+
+// Render an inline "stage" chip (KPI fetch, LLM first token, etc.) so users
+// see progress while the backend works. *_done / llm_first_token events rewrite
+// the matching in-progress chip with the elapsed time.
+function appendStatusChip(payload) {
+  const stage = payload.stage || "";
+  const label = payload.label || stage;
+  const isDone = stage.endsWith("_done") || stage === "llm_first_token";
+  // For *_done events, find the matching in-progress chip and rewrite it.
+  if (isDone) {
+    const base = stage.replace(/_done$|^llm_first_token$/, "");
+    const cur = els.messages.querySelector(
+      `.status-chip[data-stage-base="${base || "llm"}"][data-status="in_progress"]`
+    );
+    if (cur) {
+      cur.dataset.status = "done";
+      cur.textContent = `✓ ${label}`;
+      return;
+    }
+  }
+  // Otherwise create a new in-progress chip.
+  const base = stage.replace(/_(start|fetch)$/, "");
+  const chip = document.createElement("div");
+  chip.className = "status-chip";
+  chip.dataset.stage = stage;
+  chip.dataset.stageBase = base || stage;
+  chip.dataset.status = "in_progress";
+  chip.textContent = `… ${label}`;
   els.messages.appendChild(chip);
   scrollToBottom();
 }
@@ -541,9 +617,11 @@ function handleEvent(ev, botContent, appendToBuf) {
     botContent.textContent = botContent.dataset.raw;
     scrollToBottom();
   } else if (ev.type === "tool") {
-    appendToolChip(ev.name);
+    appendToolChip(ev.name, ev.input);
   } else if (ev.type === "gateway") {
     appendGatewayChip(ev);
+  } else if (ev.type === "status") {
+    appendStatusChip(ev);
   } else if (ev.type === "error") {
     appendError(ev.error);
   } else if (ev.type === "done") {
@@ -562,25 +640,7 @@ function autoResize() {
 
 els.newBtn.onclick = () => {
   state.sessionId = null;
-  clearMessages();
-  // Re-render welcome
-  const div = document.createElement("div");
-  div.className = "welcome";
-  div.innerHTML = `
-    <span class="welcome-logo" role="img" aria-label="MOCHA"></span>
-    <h2>안녕! 난 MOCHA야</h2>
-    <p>자연어로 Watcha 데이터에 대해 물어보세요.</p>
-    <div class="examples">
-      <button class="example">🎬 Mars 최근 30일 인기 장르 차트로 보여줘</button>
-      <button class="example">💰 성인관 최다 결제 유저는?</button>
-      <button class="example">⭐ 피디아 평점 높은 영화 TOP 10</button>
-      <button class="example">🎥 왓챠 인기 감독 TOP 5 그래프로</button>
-    </div>
-  `;
-  els.messages.appendChild(div);
-  div.querySelectorAll(".example").forEach((b) => {
-    b.onclick = () => sendMessage(b.textContent);
-  });
+  renderWelcome();
   renderSessions();
 };
 
