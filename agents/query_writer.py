@@ -59,7 +59,7 @@ TABLES: dict[str, dict[str, Any]] = {
         "size_mb": 741,
         "partition": None,
         "load_pattern": "daily truncate-overwrite snapshot (22:00 UTC)",
-        "use_for": "MEH negative-signal KPI. Mirrored to archive `/archive/tutorial/mehs.ftr` — use `archive_mehs` fetcher (free) instead of BQ.",
+        "use_for": "MEH negative-signal KPI. Mirrored to archive `/archive/mocha/mehs.ftr` — use `archive_mehs` fetcher (free) instead of BQ.",
         "caveats": "MEH ↔ WISH mutually exclusive at RDS (MEH 등록 시 동일 콘텐츠 WISH 자동 삭제). Snapshot semantics — deletions not captured.",
     },
     "gretel.production_us.mars_play_log_video": {
@@ -129,7 +129,7 @@ FETCHERS: dict[str, dict[str, Any]] = {
         "fn": archive.read_mehs,
         "signature": "(start: date, end: date) -> DataFrame",
         "returns": "user_id, content, content_type, action_type='MEH', created_at",
-        "table": "/archive/tutorial/mehs.ftr (mirror of gretel.frograms_us.mehs)",
+        "table": "/archive/mocha/mehs.ftr (mirror of gretel.frograms_us.mehs)",
         "use_for": (
             "MEH (관심없음 / 별로에요) events — any service. Cross-platform single archive file; "
             "filter on `content_type` to scope by target type (1=Movie, 2=TvSeason, 4=Book, 8=Webtoon, 256=ShortSeason). "

@@ -211,17 +211,19 @@ SUPPORTS = {
         "meta_top":     True,   # graph_modeling/builtin 인기 감독/배우 (이름 포함)
         "hourly":       True,
         "pareto":       True,
-        "meh_top":      True,   # MEH top contents (archive/tutorial/mehs.ftr)
+        "meh_top":      True,   # MEH top contents (archive/mocha/mehs.ftr)
+        "user_top":     True,   # 활동/소비 top user
     },
     "mars": {
         "rating_dist":  True,
-        "revenue":      False,  # archive에 가격 데이터 없음
+        "revenue":      True,   # archive/mocha/mars_tvod_purchases.ftr (BQ hudson_us mirror)
         "ctype_donut":  True,
         "genre":        True,
         "meta_top":     True,
         "hourly":       True,
         "pareto":       True,
-        "meh_top":      True,   # MEH top contents (archive/tutorial/mehs.ftr)
+        "meh_top":      True,   # MEH top contents (archive/mocha/mehs.ftr)
+        "user_top":     True,   # 활동/소비 top user
     },
     "adult": {
         "rating_dist":  False,
@@ -232,6 +234,7 @@ SUPPORTS = {
         "hourly":       True,
         "pareto":       True,
         "meh_top":      False,  # MEH 테이블에 AdultMovie/AdultWebtoon 실데이터 없음
+        "user_top":     True,   # 결제(rental+possession) 기준 top user
     },
 }
 
@@ -1075,10 +1078,138 @@ def _top_rated_contents(df: pd.DataFrame, domain: str, n: int = 10, min_count: i
     ]
 
 
+def _top_users(df: pd.DataFrame, domain: str, n: int = 10) -> list[dict]:
+    """도메인별 활동/소비 TOP N 유저.
+
+    기준 (도메인별 가용 metric):
+      - galaxy : 총 액션 수 (RATE + WISH + SEARCH + CLICK) — '활동량'
+      - mars   : 총 PLAY 수 — '시청 활동량' (PLAY 가 없으면 총 액션)
+      - adult  : 결제 수 (RENTAL + POSSESSION) — '소비'
+
+    archive feather 내 user_id 기준 단순 집계. 도메인 합산은 다루지 않음 — user_id
+    공간은 공유되나 metric 단위가 도메인별로 다르므로 도메인-내 ranking 만 의미가
+    있음. cross-domain 분석은 별도 작업.
+    """
+    if df.empty or "user_id" not in df.columns:
+        return []
+    if domain == "adult":
+        purch = df[df["action_type"].astype(str).isin(["RENTAL", "POSSESSION"])]
+        if purch.empty:
+            return []
+        g = purch.groupby("user_id", observed=True).agg(
+            events=("user_id", "size"),
+            contents=("content", "nunique"),
+        ).sort_values("events", ascending=False).head(n).reset_index()
+        metric_label = "결제"
+    elif domain == "mars":
+        plays = df[df["action_type"].astype(str) == "PLAY"]
+        target = plays if not plays.empty else df
+        g = target.groupby("user_id", observed=True).agg(
+            events=("user_id", "size"),
+            contents=("content", "nunique"),
+        ).sort_values("events", ascending=False).head(n).reset_index()
+        metric_label = "PLAY" if not plays.empty else "활동"
+    elif domain == "galaxy":
+        g = df.groupby("user_id", observed=True).agg(
+            events=("user_id", "size"),
+            contents=("content", "nunique"),
+        ).sort_values("events", ascending=False).head(n).reset_index()
+        metric_label = "활동"
+    else:
+        return []
+    return [
+        {"user_id": int(r["user_id"]),
+         "events": int(r["events"]),
+         "contents": int(r["contents"]),
+         "metric": metric_label}
+        for _, r in g.iterrows()
+    ]
+
+
+def _mars_revenue(start: date, end: date) -> dict:
+    """MARS TVOD — 기간 총매출 + 1인당 매출 + 일자별 매출.
+
+    Source: `/archive/mocha/mars_tvod_purchases.ftr` (BQ hudson_us.rentals +
+    possessions + payments JOIN 결과). adult content (16/32) 는 제외 — adult
+    도메인이 별도 panel.
+    """
+    from data_sources.archive import read_mars_tvod_purchases  # lazy
+    try:
+        df = read_mars_tvod_purchases(start, end)
+    except FileNotFoundError:
+        return {"available": False}
+    if df.empty:
+        return {"available": True, "total_revenue": 0, "paying_users": 0,
+                "revenue_per_paying_user": 0, "daily_revenue": [], "top_payers": []}
+    # mars 도메인 content_type만 (Adult 제외 — rec_adult 패널이 별도)
+    df = df[df["content_type"].isin([1, 2, 128, 8])].copy()
+    if df.empty:
+        return {"available": True, "total_revenue": 0, "paying_users": 0,
+                "revenue_per_paying_user": 0, "daily_revenue": [], "top_payers": []}
+    df["amount_cents"] = df["amount_cents"].fillna(0).astype(int)
+    df["date"] = pd.to_datetime(df["created_at"], unit="s", utc=True) \
+                   .dt.tz_convert("Asia/Seoul").dt.date.astype(str)
+    total_rev = int(df["amount_cents"].sum())
+    paying_users = int(df["user_id"].nunique())
+    arppu = float(total_rev) / paying_users if paying_users else 0.0
+    daily = df.groupby("date", observed=True).agg(
+        revenue=("amount_cents", "sum"),
+        purchases=("amount_cents", "size"),
+        users=("user_id", "nunique"),
+    ).sort_index().reset_index()
+    top_payers = df.groupby("user_id", observed=True).agg(
+        revenue=("amount_cents", "sum"),
+        purchases=("amount_cents", "size"),
+    ).sort_values("revenue", ascending=False).head(10).reset_index()
+    return {
+        "available": True,
+        "total_revenue": total_rev,
+        "paying_users": paying_users,
+        "revenue_per_paying_user": arppu,
+        "daily_revenue": [
+            {"date": r["date"], "revenue": int(r["revenue"]),
+             "purchases": int(r["purchases"]), "users": int(r["users"])}
+            for _, r in daily.iterrows()
+        ],
+        "top_payers": [
+            {"user_id": int(r["user_id"]), "revenue": int(r["revenue"]),
+             "purchases": int(r["purchases"])}
+            for _, r in top_payers.iterrows()
+        ],
+    }
+
+
+def _mars_top_revenue_contents(start: date, end: date, n: int = 10) -> list[dict]:
+    """MARS TVOD — TOP N 매출 콘텐츠 (Movie / TvSeason / TvEpisode / Webtoon)."""
+    from data_sources.archive import read_mars_tvod_purchases  # lazy
+    try:
+        df = read_mars_tvod_purchases(start, end)
+    except FileNotFoundError:
+        return []
+    if df.empty:
+        return []
+    df = df[df["content_type"].isin([1, 2, 128, 8])].copy()
+    if df.empty:
+        return []
+    df["amount_cents"] = df["amount_cents"].fillna(0).astype(int)
+    g = df.groupby("content", observed=True).agg(
+        revenue=("amount_cents", "sum"),
+        purchases=("amount_cents", "size"),
+        users=("user_id", "nunique"),
+    ).sort_values("revenue", ascending=False).head(n).reset_index()
+    tm = _load_title_map()
+    return [
+        {"content": str(r["content"]), "title": tm.get(str(r["content"]), ""),
+         "revenue": int(r["revenue"]),
+         "purchases": int(r["purchases"]), "users": int(r["users"])}
+        for _, r in g.iterrows()
+    ]
+
+
 def _top_meh_contents(domain: str, start: date, end: date, n: int = 10) -> list[dict]:
     """부정 피드백 TOP N 콘텐츠 — 같은 콘텐츠가 가장 많이 'meh'(별로에요) 받은 순.
 
-    Source: `/archive/tutorial/mehs.ftr` (BQ `gretel.frograms_us.mehs` 풀 dump).
+    Source: `/archive/mocha/mehs.ftr` (BQ `gretel.frograms_us.mehs` 풀 dump).
     Cross-platform single file — domain은 content_type 으로만 분기.
       - galaxy : content_type ∈ {1, 2, 4, 8} (Movie/TvSeason/Book/Webtoon)
       - mars   : content_type ∈ {1, 2}      (Movie/TvSeason)
@@ -1359,7 +1490,11 @@ def summary(
         "rating_distribution": _rating_distribution(df, domain, start, end, content_types),
         "hourly_activity": _hourly_activity(df),
         "pareto_curve": _pareto_curve(df),
-        "revenue": _adult_revenue(df, domain),
+        "revenue": (
+            _adult_revenue(df, domain) if domain == "adult"
+            else _mars_revenue(start, end) if domain == "mars"
+            else {"available": False}
+        ),
         "top_actors": (
             _adult_meta_top(df, domain, "actor") if domain == "adult"
             else _galaxy_mars_meta_top(df, "actor") if domain in ("galaxy", "mars")
@@ -1370,9 +1505,14 @@ def summary(
             else _galaxy_mars_meta_top(df, "director") if domain in ("galaxy", "mars")
             else []
         ),
-        "top_revenue_contents": _adult_top_revenue_contents(df, domain),
+        "top_revenue_contents": (
+            _adult_top_revenue_contents(df, domain) if domain == "adult"
+            else _mars_top_revenue_contents(start, end) if domain == "mars"
+            else []
+        ),
         "top_rated_contents": _top_rated_contents(df, domain),
         "top_meh_contents": _top_meh_contents(domain, start, end),
+        "top_users": _top_users(df, domain),
         "supports": SUPPORTS.get(domain, {}),
         "supports_genre": domain in GENRE_DOMAINS,
         "files_read": [Path(s.path).name for s in picks],

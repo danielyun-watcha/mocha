@@ -92,7 +92,9 @@ class _Settings:
     FAST_LEAD_MODEL: str = os.environ.get("MOCHA_FAST_LEAD_MODEL", "claude-haiku-4-5-20251001")
     INSIGHT_MODEL: str = os.environ.get("MOCHA_INSIGHT_MODEL", "claude-haiku-4-5-20251001")
     MAX_BUDGET_USD: float = float(os.environ.get("MOCHA_MAX_BUDGET_USD", "3.0"))
-    FAST_INLINE_MAX_DAYS: int = int(os.environ.get("MOCHA_FAST_INLINE_MAX_DAYS", "90"))
+    # 사실상 archive 범위 = cap. start_d 는 archive `min_d` 로 자동 clamp 되니까
+    # 큰 값 둬도 안전. env 로 더 짧게 조이는 것도 가능.
+    FAST_INLINE_MAX_DAYS: int = int(os.environ.get("MOCHA_FAST_INLINE_MAX_DAYS", "1000"))
     OAUTH_CRED_PATH: Path = Path(os.environ.get("CLAUDE_OAUTH_CRED", "/root/.claude/.credentials.json"))
     SESSION_RETENTION_DAYS: int = int(os.environ.get("MOCHA_SESSION_RETENTION_DAYS", "7"))
     CHART_RETENTION_HOURS: int = int(os.environ.get("MOCHA_CHART_RETENTION_HOURS", "24"))
@@ -1667,17 +1669,17 @@ async def _stream_response(session_id: int, message: str) -> AsyncIterator[str]:
     # fast track + 알려진 도메인 → KPI summary 를 pre-fetch 해서 prompt 에 inline.
     # → Lead 가 curl tool 호출 round-trip 1회 절약 + skills/plugin 로딩도 skip.
     fast_kpi_inline = None
-    # KPI summary 동기 fetch 시간이 기간에 비례.
-    # 30일 cap — galaxy 30일 ~30-40s (cold), prewarm 후 즉시. 90일 prewarm 은 5분+ 비용 큼.
-    # 더 긴 기간은 시스템 프롬프트에 "대시보드/BigQuery 권장" 안내.
-    FAST_INLINE_MAX_DAYS = 90
+    # KPI summary 동기 fetch 시간이 기간에 비례. cap 자체는 큼 (default 1000) —
+    # archive `available_range` 로 자동 clamp 되니까 사실상 archive 끝까지 cover.
+    # 더 짧게 제한하려면 env `MOCHA_FAST_INLINE_MAX_DAYS`.
+    MAX_DAYS = cfg.FAST_INLINE_MAX_DAYS
     if is_fast and domain in ("galaxy", "mars", "adult"):
         try:
             from datetime import date as _date, timedelta
             rng = kpi_mod.available_range(domain)
             end_d = _date.fromisoformat(rng["max"])
             requested_days = max(1, int(classification.get("period_days", 7)))
-            actual_days = min(requested_days, FAST_INLINE_MAX_DAYS)
+            actual_days = min(requested_days, MAX_DAYS)
             min_d = _date.fromisoformat(rng["min"])
             start_d = max(end_d - timedelta(days=actual_days - 1), min_d)
             # SSE progress — 사용자에게 "지금 어디까지 진행됐는지" 보여주려는 의도.
@@ -1907,6 +1909,57 @@ async def _stream_response(session_id: int, message: str) -> AsyncIterator[str]:
         # cost = 0 (subscription quota — API 호출 X)
         yield _sse("done", {"cost_usd": 0.0, "via": "oauth_direct", "usage": usage_info})
         return
+    elif is_fast:
+        # Fast track but no KPI domain (small_talk / interpretive_qa / unknown).
+        # OAuth-direct generic path — keeps root-user dev env working (claude-agent-sdk
+        # subprocess refuses bypassPermissions under sudo). If the user actually wants
+        # data, the model is told to ask which domain (mars / galaxy / adult).
+        fast_system = (
+            "Watcha 데이터 분석가. 한국어로 짧고 명확하게 답한다. "
+            "데이터 질문처럼 보이면 어느 도메인 (왓챠 mars / 왓챠피디아 galaxy / 성인+ adult) "
+            "인지 한 줄로 되묻는다. 일반 인사·잡담은 한두 문장으로 응답."
+        )
+        full_text: list[str] = []
+        usage_info = None
+        t_llm = time.time()
+        yield _sse("status", {"stage": "llm_start", "label": "답변 생성 중"})
+        first_token_ms: int | None = None
+        async for kind, payload_ in stream_oauth_completion(
+            model=lead_model, system=fast_system, user_msg=message, max_tokens=1024,
+            history=None,
+        ):
+            if kind == "text":
+                if first_token_ms is None:
+                    first_token_ms = int((time.time() - t_llm) * 1000)
+                    yield _sse("status", {
+                        "stage": "llm_first_token",
+                        "label": f"첫 토큰 ({first_token_ms}ms)",
+                        "elapsed_ms": first_token_ms,
+                    })
+                full_text.append(payload_)
+                yield _sse("text", {"text": payload_})
+            elif kind == "done":
+                try:
+                    usage_info = json.loads(payload_)
+                except json.JSONDecodeError:
+                    usage_info = None
+            elif kind == "error":
+                yield _sse_error("llm_stream_failed", payload_)
+                break
+        if full_text:
+            assistant_text = "".join(full_text)
+            async with db_pool.acquire() as conn:
+                await conn.execute(
+                    "INSERT INTO messages(session_id, role, content) VALUES($1, 'assistant', $2)",
+                    session_id, assistant_text,
+                )
+        if usage_info:
+            try:
+                await _record_token_usage(lead_model, usage_info)
+            except Exception:
+                log.exception("token_usage persist failed (continuing)")
+        yield _sse("done", {"cost_usd": 0.0, "via": "oauth_direct_generic", "usage": usage_info})
+        return
     else:
         options = ClaudeAgentOptions(
             cwd=str(BASE_DIR),
@@ -2045,14 +2098,14 @@ async def chat(session_id: int, req: ChatRequest) -> StreamingResponse:
     )
 
 
-# /archive/mocha_sessions/<date>/ 에 마크다운으로 영구 저장.
-# 데모/리뷰 자료로 모아두는 용도. 별도 서버 권한이라 mocha 가 write 가능해야 함.
-_ARCHIVE_ROOT = Path(os.environ.get("MOCHA_ARCHIVE_ROOT", "/archive/mocha_sessions"))
+# /archive/mocha/sessions/<date>/ 에 마크다운으로 영구 저장.
+# 데모/리뷰 자료로 모아두는 용도. mocha-owned 데이터는 `/archive/mocha/` 하위로 격리.
+_ARCHIVE_ROOT = Path(os.environ.get("MOCHA_ARCHIVE_ROOT", "/archive/mocha/sessions"))
 
 
 @app.post("/api/sessions/{session_id}/archive")
 async def archive_session(session_id: int) -> dict:
-    """현재 대화 markdown 으로 변환 후 `/archive/mocha_sessions/<date>/` 에 저장."""
+    """현재 대화 markdown 으로 변환 후 `/archive/mocha/sessions/<date>/` 에 저장."""
     if not db_pool:
         raise HTTPException(status_code=503, detail="db unavailable")
     async with db_pool.acquire() as conn:
