@@ -496,16 +496,21 @@ async def _persist_kpi_cache(
     domain: str, start_d: Any, end_d: Any, cts_str: str,
     summary: dict, series: dict,
 ) -> None:
-    async with db_pool.acquire() as conn:
-        await conn.execute(
-            "INSERT INTO kpi_summary_cache(domain, start_date, end_date, content_types, "
-            "summary_json, series_json) VALUES($1,$2,$3,$4,$5::jsonb,$6::jsonb) "
-            "ON CONFLICT (domain, start_date, end_date, content_types) DO UPDATE "
-            "SET summary_json=EXCLUDED.summary_json, "
-            "    series_json=EXCLUDED.series_json, created_at=NOW()",
-            domain, start_d, end_d, cts_str,
-            json.dumps(summary), json.dumps(series) if series else None,
-        )
+    """Persist KPI cache to PG. Tolerate timeouts — in-memory cache still wins,
+    DB persist is only for restart hydration. Log + return on failure."""
+    try:
+        async with db_pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO kpi_summary_cache(domain, start_date, end_date, content_types, "
+                "summary_json, series_json) VALUES($1,$2,$3,$4,$5::jsonb,$6::jsonb) "
+                "ON CONFLICT (domain, start_date, end_date, content_types) DO UPDATE "
+                "SET summary_json=EXCLUDED.summary_json, "
+                "    series_json=EXCLUDED.series_json, created_at=NOW()",
+                domain, start_d, end_d, cts_str,
+                json.dumps(summary), json.dumps(series) if series else None,
+            )
+    except Exception as e:
+        log.warning(f"[persist-cache] {domain} {start_d}~{end_d} skipped: {type(e).__name__} ({e})")
 
 
 # Lazy filter prewarm — domain×start×end 단위로 한 번만 실행
@@ -715,9 +720,12 @@ async def lifespan(app: FastAPI):
     global db_pool
     import asyncio
     log.info("Connecting to PostgreSQL")
+    # KPI summary JSON 이 수 MB(특히 galaxy) — asyncpg 의 prepared statement cache 가
+    # 큰 JSONB 적재 시 prepare 단계에서 멈추는 케이스가 있어 cache=0 + 넉넉한 timeout.
     db_pool = await asyncpg.create_pool(
         DATABASE_URL, min_size=2, max_size=20, timeout=5.0,
-        command_timeout=30.0,
+        command_timeout=120.0,
+        statement_cache_size=0,
     )
     # Apply migrations 순차적 — schema_migrations 테이블이 version 추적.
     # 새 .sql 파일을 migrations/ 에 NNN_name.sql (3자리 번호) 형식으로 추가만 하면 됨.
@@ -1672,10 +1680,22 @@ async def _stream_response(session_id: int, message: str) -> AsyncIterator[str]:
             actual_days = min(requested_days, FAST_INLINE_MAX_DAYS)
             min_d = _date.fromisoformat(rng["min"])
             start_d = max(end_d - timedelta(days=actual_days - 1), min_d)
+            # SSE progress — 사용자에게 "지금 어디까지 진행됐는지" 보여주려는 의도.
+            # KPI fetch 가 cache miss 일 때만 몇 초 이상 걸리고, hit 면 ms 단위로 끝남.
             t_fetch = time.time()
             import asyncio as _asyncio
+            yield _sse("status", {
+                "stage": "kpi_fetch",
+                "label": f"{domain.upper()} {actual_days}일 KPI 집계 중",
+            })
             kpi_full = await _asyncio.to_thread(kpi_mod.summary, domain, start_d, end_d, None, None)
-            log.info(f"[fast-inline] {domain} {start_d}~{end_d} ({actual_days}d) fetched in {time.time()-t_fetch:.1f}s")
+            fetch_ms = int((time.time() - t_fetch) * 1000)
+            log.info(f"[fast-inline] {domain} {start_d}~{end_d} ({actual_days}d) fetched in {fetch_ms}ms")
+            yield _sse("status", {
+                "stage": "kpi_done",
+                "label": f"KPI 집계 완료 ({fetch_ms}ms)",
+                "elapsed_ms": fetch_ms,
+            })
             # 큰 시계열 / 메타 필드 제거 (top-N + 핵심 KPI + files_read + timeseries 만 남김)
             # timeseries 는 추이/distribution 질문 답변에 필수 → inline 유지.
             DROP = {"hourly_activity", "pareto_curve",
@@ -1843,11 +1863,22 @@ async def _stream_response(session_id: int, message: str) -> AsyncIterator[str]:
 
         full_text = []
         usage_info = None
+        # LLM streaming 시작 시점 기록 → 첫 토큰까지의 latency 를 사용자에게 표시.
+        t_llm = time.time()
+        yield _sse("status", {"stage": "llm_start", "label": f"답변 생성 중 ({lead_model.split('-')[1]})"})
+        first_token_ms: int | None = None
         async for kind, payload_ in stream_oauth_completion(
             model=lead_model, system=fast_system, user_msg=message, max_tokens=2048,
             history=history or None,
         ):
             if kind == "text":
+                if first_token_ms is None:
+                    first_token_ms = int((time.time() - t_llm) * 1000)
+                    yield _sse("status", {
+                        "stage": "llm_first_token",
+                        "label": f"첫 토큰 ({first_token_ms}ms)",
+                        "elapsed_ms": first_token_ms,
+                    })
                 full_text.append(payload_)
                 yield _sse("text", {"text": payload_})
             elif kind == "done":

@@ -48,7 +48,10 @@ KST = timezone(timedelta(hours=9))
 # so KPI groupbys stay fast on repeat queries.  Key = (path, domain).
 _CACHE: "OrderedDict[tuple[str, str], tuple[float, pd.DataFrame]]" = OrderedDict()
 _CACHE_LOCK = threading.Lock()
-_CACHE_MAX = 6
+# 3 domains × (summary + series) × (7-day prewarm + 30-day long-prewarm) = 12
+# 키 + dashboard 임의 기간 조합으로 ~20+. 작은 LRU 면 30일 캐시가 7일 prewarm 에
+# 의해 evict 돼서 다음 요청 cold restart 됨. 30 으로 잡고 안정 hit 유지.
+_CACHE_MAX = 30
 
 
 def _preprocess(df: pd.DataFrame, domain: str) -> pd.DataFrame:
@@ -208,6 +211,7 @@ SUPPORTS = {
         "meta_top":     True,   # graph_modeling/builtin 인기 감독/배우 (이름 포함)
         "hourly":       True,
         "pareto":       True,
+        "meh_top":      True,   # MEH top contents (archive/tutorial/mehs.ftr)
     },
     "mars": {
         "rating_dist":  True,
@@ -217,6 +221,7 @@ SUPPORTS = {
         "meta_top":     True,
         "hourly":       True,
         "pareto":       True,
+        "meh_top":      True,   # MEH top contents (archive/tutorial/mehs.ftr)
     },
     "adult": {
         "rating_dist":  False,
@@ -226,6 +231,7 @@ SUPPORTS = {
         "meta_top":     True,   # 인기 배우 / 감독
         "hourly":       True,
         "pareto":       True,
+        "meh_top":      False,  # MEH 테이블에 AdultMovie/AdultWebtoon 실데이터 없음
     },
 }
 
@@ -1069,6 +1075,40 @@ def _top_rated_contents(df: pd.DataFrame, domain: str, n: int = 10, min_count: i
     ]
 
 
+def _top_meh_contents(domain: str, start: date, end: date, n: int = 10) -> list[dict]:
+    """부정 피드백 TOP N 콘텐츠 — 같은 콘텐츠가 가장 많이 'meh'(별로에요) 받은 순.
+
+    Source: `/archive/tutorial/mehs.ftr` (BQ `gretel.frograms_us.mehs` 풀 dump).
+    Cross-platform single file — domain은 content_type 으로만 분기.
+      - galaxy : content_type ∈ {1, 2, 4, 8} (Movie/TvSeason/Book/Webtoon)
+      - mars   : content_type ∈ {1, 2}      (Movie/TvSeason)
+      - adult  : MEH 테이블에 실데이터 없음 → 빈 list
+    """
+    if domain not in ("galaxy", "mars"):
+        return []
+    from data_sources.archive import read_mehs  # lazy — keep main.py import-safe when /archive unmounted
+    try:
+        mdf = read_mehs(start, end)
+    except FileNotFoundError:
+        return []
+    if mdf.empty:
+        return []
+    ct_filter = [1, 2, 4, 8] if domain == "galaxy" else [1, 2]
+    mdf = mdf[mdf["content_type"].isin(ct_filter)]
+    if mdf.empty:
+        return []
+    g = mdf.groupby("content", observed=True).agg(
+        meh_count=("user_id", "size"),
+        users=("user_id", "nunique"),
+    ).sort_values(["meh_count", "users"], ascending=[False, False]).head(n).reset_index()
+    tm = _load_title_map()
+    return [
+        {"content": str(r["content"]), "title": tm.get(str(r["content"]), ""),
+         "meh_count": int(r["meh_count"]), "users": int(r["users"])}
+        for _, r in g.iterrows()
+    ]
+
+
 # ── domain-specific KPI sets ────────────────────────────────────
 
 def _galaxy_kpis(df: pd.DataFrame, ua: pd.DataFrame, n_users: int, n_contents: int) -> list[dict]:
@@ -1332,6 +1372,7 @@ def summary(
         ),
         "top_revenue_contents": _adult_top_revenue_contents(df, domain),
         "top_rated_contents": _top_rated_contents(df, domain),
+        "top_meh_contents": _top_meh_contents(domain, start, end),
         "supports": SUPPORTS.get(domain, {}),
         "supports_genre": domain in GENRE_DOMAINS,
         "files_read": [Path(s.path).name for s in picks],

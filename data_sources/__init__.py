@@ -5,7 +5,7 @@ Adapters output pandas DataFrames in the mocha convention so that
 responsible for one store:
 
 - `bq` — BigQuery (galaxy/mars/adult production tables)
-- (future) `archive` — `/archive/*` feather snapshots
+- `archive` — `/archive/*` feather snapshots (MEH, etc.)
 - (future) `mysql` — direct MySQL (only if BQ mirror is insufficient)
 
 Adapters never depend on `kpi_calc` or each other; they are pure I/O.

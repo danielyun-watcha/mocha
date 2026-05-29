@@ -22,7 +22,7 @@ from typing import Any, Callable
 
 import pandas as pd
 
-from data_sources import bq
+from data_sources import archive, bq
 
 
 # ── BQ table catalog ───────────────────────────────────────────────────
@@ -53,9 +53,14 @@ TABLES: dict[str, dict[str, Any]] = {
         "use_for": "(future) comment-volume KPI",
     },
     "gretel.frograms_us.mehs": {
-        "description": "Galaxy 'meh' (관심없어요) reactions.",
-        "domain": "GALAXY",
-        "use_for": "(future) negative-signal KPI",
+        "description": "Cross-platform 'meh' (관심없어요) reactions — Galaxy/Mars/Venus combined (single RDS table, no service partition).",
+        "domain": "GALAXY + MARS + ALL (target_type 1=Movie, 2=TvSeason, 4=Book, 8=Webtoon, 256=ShortSeason)",
+        "key_columns": ["id", "user_id", "target_id", "target_type", "created_at", "updated_at"],
+        "size_mb": 741,
+        "partition": None,
+        "load_pattern": "daily truncate-overwrite snapshot (22:00 UTC)",
+        "use_for": "MEH negative-signal KPI. Mirrored to archive `/archive/tutorial/mehs.ftr` — use `archive_mehs` fetcher (free) instead of BQ.",
+        "caveats": "MEH ↔ WISH mutually exclusive at RDS (MEH 등록 시 동일 콘텐츠 WISH 자동 삭제). Snapshot semantics — deletions not captured.",
     },
     "gretel.production_us.mars_play_log_video": {
         "description": "Mars video play log (Hermes real-time pipeline).",
@@ -119,6 +124,18 @@ FETCHERS: dict[str, dict[str, Any]] = {
         "table": "gretel.production_us.mars_play_log_video",
         "use_for": "Adult (성인+) video play events. Same table as mars_plays, filtered to AdultMovie.",
     },
+    # ── Archive fetchers (free, read from /archive NFS) ─────────────────
+    "archive_mehs": {
+        "fn": archive.read_mehs,
+        "signature": "(start: date, end: date) -> DataFrame",
+        "returns": "user_id, content, content_type, action_type='MEH', created_at",
+        "table": "/archive/tutorial/mehs.ftr (mirror of gretel.frograms_us.mehs)",
+        "use_for": (
+            "MEH (관심없음 / 별로에요) events — any service. Cross-platform single archive file; "
+            "filter on `content_type` to scope by target type (1=Movie, 2=TvSeason, 4=Book, 8=Webtoon, 256=ShortSeason). "
+            "No service field — MEH is platform-agnostic in RDS. Use this instead of BQ for MEH KPIs (free)."
+        ),
+    },
 }
 
 
@@ -148,10 +165,13 @@ def describe_capabilities() -> str:
     Kept minimal: name, signature, what it returns, what to use it for.
     """
     lines = [
-        "## BigQuery data fetchers (call via `dispatch('<name>', start=..., end=...)`)",
+        "## Data fetchers (call via `dispatch('<name>', start=..., end=...)`)",
         "",
         "All fetchers return pandas DataFrames using the mocha event schema:",
         "`user_id`, `content` (`'{type_int}:{id}'`), `created_at` (unix sec), `action_type`, plus action-specific columns.",
+        "",
+        "Fetcher names prefixed with `archive_` read from `/archive/*` feather snapshots (free).",
+        "Others hit BigQuery — partition filters and cost ceilings apply.",
         "",
     ]
     for name in list_fetchers():

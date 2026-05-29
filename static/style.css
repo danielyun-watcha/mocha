@@ -1088,7 +1088,7 @@ canvas.chart-ts, canvas.chart-actions {
   width: 260px; height: 260px;
   margin-bottom: 8px;
   display: inline-block;
-  background: url("/static/mascot-full.png") no-repeat center / contain;
+  background: url("/static/mascot.png") no-repeat center / contain;
   animation: mascotBob 3s ease-in-out infinite;
 }
 [data-theme="dark"] .welcome-logo {
@@ -1291,6 +1291,13 @@ canvas.chart-ts, canvas.chart-actions {
   background: rgba(217, 119, 87, 0.14); border-color: rgba(217, 119, 87, 0.4);
   color: #f3b095;
 }
+.status-chip {
+  width: 100%; max-width: 760px; margin: 3px auto;
+  padding: 4px 12px; font-size: 12px;
+  color: var(--ink-faint); font-family: inherit;
+}
+.status-chip[data-status="in_progress"] { opacity: 0.75; font-style: italic; }
+.status-chip[data-status="done"] { opacity: 1; color: var(--ink-soft); }
 .msg-row.error .msg-content {
   background: rgba(255, 107, 107, 0.10); border: 1px solid var(--danger);
   border-radius: var(--radius-sm); padding: 10px 14px; color: var(--danger);
