@@ -1,0 +1,49 @@
+[project]
+name = "mocha"
+description = "자연어로 묻는 Watcha 데이터 분석 AI"
+requires-python = ">=3.10"
+dynamic = ["version", "dependencies"]
+
+# requirements.txt 를 dependency 의 source of truth 로 둔다 (`pip install -r`
+# 호환). pyproject 는 lint/format/test 설정만 담는다.
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements.txt"] }
+
+# ── Ruff (lint + format) ────────────────────────────────────────────────
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+extend-exclude = [
+    "_runtime/",
+    "static/",
+    "plugins/",          # vendored plugin source
+    "users/",            # legacy frograms subpath (cleanup 대상)
+    "__pycache__",
+]
+
+[tool.ruff.lint]
+# 처음부터 strict 하게 켜면 noise 커서 단계적 적용:
+#   E,F (pyflakes/pycodestyle 기본) + I (import 정렬) + B (bugbear) + UP (pyupgrade)
+# 추후 N (naming), D (docstring), ANN (annotations) 단계적 추가.
+select = ["E", "F", "I", "B", "UP", "W"]
+ignore = [
+    "E501",   # line-too-long — formatter 가 처리 (장문 한국어 주석 다수)
+    "B008",   # FastAPI Depends() default — 의도된 패턴
+    "E701",   # if cond: stmt — 의도된 단축 스타일
+    "E702",   # `;` 짧은 보조 statement 한 줄에 — 의도된 단축
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B011"]  # tests 안의 assert 허용
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+# ── Pytest ──────────────────────────────────────────────────────────────
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --tb=short"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]

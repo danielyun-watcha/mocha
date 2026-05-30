@@ -1,0 +1,32 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install deps
+        # Pure-test/lint deps only — no BigQuery/Postgres needed because
+        # tests mock or use pure pandas. Keeps CI fast (< 60s).
+        run: |
+          python -m pip install -U pip
+          pip install ruff pytest pandas pyarrow
+
+      - name: Ruff lint
+        run: ruff check .
+
+      - name: Pytest
+        run: pytest tests/

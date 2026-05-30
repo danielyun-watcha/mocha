@@ -27,10 +27,7 @@ Input schema expected:
 """
 from __future__ import annotations
 
-from typing import Optional
-
 import pandas as pd
-
 
 # ── column name constants ───────────────────────────────────────────────
 RESPONSE_ID_COL = "response_id"
@@ -72,7 +69,7 @@ def _groupby(
     groupby_cols: list[str],
     agg: str = "count",
     new_col: str = VALUE_COL,
-    target_col: Optional[str] = None,
+    target_col: str | None = None,
 ) -> pd.DataFrame:
     """Group-by + aggregate, emitting `[*groupby_cols, value]`.
 

@@ -1,0 +1,53 @@
+name: smoke
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install deps
+        run: |
+          python -m pip install -U pip
+          pip install fastapi 'uvicorn[standard]' asyncpg httpx pgserver \
+                      pydantic claude-agent-sdk pandas pyarrow matplotlib
+
+      - name: Lint compile-check
+        run: |
+          python -m py_compile main.py kpi.py prompts/__init__.py
+          # confirm prompt templates parse without missing vars beyond known set
+          python -c "
+          import sys; sys.path.insert(0, '.')
+          import prompts
+          assert 'JSON only' in prompts.render('insight')
+          assert 'Track:' in prompts.render('gateway')
+          "
+
+      - name: Start mocha + smoke test
+        env:
+          MOCHA_AUTH_DISABLED: "1"  # CI: no auth — internal only
+          REMY_ENV: dev
+        run: |
+          # If archive data is unavailable, smoke may skip gracefully.
+          python _runtime/launch.py &
+          MOCHA_PID=$!
+          # wait for server up
+          for i in {1..60}; do
+            if curl -fs http://localhost:8090/health > /dev/null; then break; fi
+            sleep 1
+          done
+          python _runtime/smoke_test.py || EXIT=$?
+          kill $MOCHA_PID 2>/dev/null || true
+          exit ${EXIT:-0}

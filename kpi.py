@@ -33,7 +33,6 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
 
 import pandas as pd
 
@@ -46,7 +45,7 @@ KST = timezone(timedelta(hours=9))
 # MARS monthly snapshots are 25M+ rows.  Cache the *normalized* form
 # (string action_type without :MARS suffix, KST date column added)
 # so KPI groupbys stay fast on repeat queries.  Key = (path, domain).
-_CACHE: "OrderedDict[tuple[str, str], tuple[float, pd.DataFrame]]" = OrderedDict()
+_CACHE: OrderedDict[tuple[str, str], tuple[float, pd.DataFrame]] = OrderedDict()
 _CACHE_LOCK = threading.Lock()
 # 3 domains × (summary + series) × (7-day prewarm + 30-day long-prewarm) = 12
 # 키 + dashboard 임의 기간 조합으로 ~20+. 작은 LRU 면 30일 캐시가 7일 prewarm 에
@@ -92,7 +91,7 @@ def _preprocess(df: pd.DataFrame, domain: str) -> pd.DataFrame:
 # Result-level cache: 같은 (domain, start, end, content_types) query 가 다시 들어오면
 # 모든 KPI 계산 skip 하고 응답 dict 그대로 반환.  도메인 토글 시 즉시 응답.
 # REDIS_URL 환경변수 설정 시 Redis 백엔드 (multi-worker 공유), 미설정 시 in-process dict.
-_RESULT_CACHE: "OrderedDict[tuple, dict]" = OrderedDict()
+_RESULT_CACHE: OrderedDict[tuple, dict] = OrderedDict()
 _RESULT_CACHE_LOCK = threading.Lock()
 _RESULT_CACHE_MAX = 80  # ~3 domains × 약간의 기간 조합
 
@@ -353,7 +352,7 @@ def _load_genre_map() -> dict[str, str]:
                 continue
             df = pd.read_parquet(p, columns=["content_id", "main_genre_name"])
             df = df[df["main_genre_name"].notna() & (df["main_genre_name"] != "")]
-            for cid, g in zip(df["content_id"].astype(str), df["main_genre_name"]):
+            for cid, g in zip(df["content_id"].astype(str), df["main_genre_name"], strict=False):
                 merged[cid] = g
         _GENRE_MAP = merged
         return _GENRE_MAP
@@ -587,7 +586,7 @@ def _adult_revenue(df: pd.DataFrame, domain: str) -> dict:
 
 # ── ADULT 인기 메타 (배우/감독) ────────────────────────────────
 _META_LOCK = threading.Lock()
-_META_MAPS: dict[str, "object"] | None = None
+_META_MAPS: dict[str, object] | None = None
 
 
 def _load_adult_metas() -> dict:
@@ -630,7 +629,8 @@ def _load_graph_meta() -> dict:
     with _GRAPH_META_LOCK:
         if _GRAPH_META is not None:
             return _GRAPH_META
-        import pickle, numpy as np
+        import pickle
+
         base = ARCHIVE / "graph_modeling" / "builtin"
         with open(f"{base}/contents.pkl", "rb") as f: contents = pickle.load(f)
         with open(f"{base}/content_credit_edges.pkl", "rb") as f: cc = pickle.load(f)
@@ -1089,6 +1089,11 @@ def _top_users(df: pd.DataFrame, domain: str, n: int = 10) -> list[dict]:
     archive feather 내 user_id 기준 단순 집계. 도메인 합산은 다루지 않음 — user_id
     공간은 공유되나 metric 단위가 도메인별로 다르므로 도메인-내 ranking 만 의미가
     있음. cross-domain 분석은 별도 작업.
+
+    Returns: list of {user_id, events, contents, metric}
+      - events  : 해당 metric 의 행위 수 (정렬 기준)
+      - contents: 해당 user 가 손댄 unique content 수 (diversity 보조 지표)
+      - metric  : "활동" | "PLAY" | "결제" (UI 라벨)
     """
     if df.empty or "user_id" not in df.columns:
         return []
@@ -1180,7 +1185,16 @@ def _mars_revenue(start: date, end: date) -> dict:
 
 
 def _mars_top_revenue_contents(start: date, end: date, n: int = 10) -> list[dict]:
-    """MARS TVOD — TOP N 매출 콘텐츠 (Movie / TvSeason / TvEpisode / Webtoon)."""
+    """MARS TVOD — TOP N 매출 콘텐츠 (Movie / TvSeason / TvEpisode / Webtoon).
+
+    Returns: list of {content, title, revenue, purchases, users}
+      - content : "{content_type_int}:{item_id}" (e.g. "1:1584718")
+      - title   : `_load_title_map()` lookup. 없으면 빈 string.
+      - revenue : KRW 합산 (payments.amount_cents). 같은 invoice 가 여러 item
+                  묶은 경우 약간 over-count 가능
+      - purchases : 해당 콘텐츠 결제 row 수
+      - users     : 결제한 unique user 수
+    """
     from data_sources.archive import read_mars_tvod_purchases  # lazy
     try:
         df = read_mars_tvod_purchases(start, end)

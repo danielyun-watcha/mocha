@@ -1,30 +1,30 @@
 """MOCHA — 자연어로 묻는 Watcha 데이터 분석 AI."""
 from __future__ import annotations
 
+# Logging: MOCHA_LOG_FORMAT=json 이면 structured JSON (CloudWatch/Loki 친화),
+# 기본은 사람-친화 plain text. correlation_id 는 LoggerAdapter 로 부여.
+import contextvars as _ctxvars
 import json
 import logging
 import os
 import sys
 import time
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import Any
 
 import asyncpg
 import httpx
 from claude_agent_sdk import ClaudeAgentOptions, query
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 import kpi as kpi_mod
 import oauth_creds as _oauth_creds
 import prompts as _prompts
-
-# Logging: MOCHA_LOG_FORMAT=json 이면 structured JSON (CloudWatch/Loki 친화),
-# 기본은 사람-친화 plain text. correlation_id 는 LoggerAdapter 로 부여.
-import contextvars as _ctxvars
 
 _request_id_ctx: _ctxvars.ContextVar[str | None] = _ctxvars.ContextVar(
     "mocha_request_id", default=None
@@ -461,7 +461,7 @@ async def _hydrate_kpi_cache_from_db() -> None:
 
     Staleness: 같은 KST date 안에 만들어진 row 만 fresh (사용자 명시 — 데이터는
     하루 1회 갱신).  Stale row 는 hydrate skip → 다음 prewarm 이 재계산."""
-    from datetime import datetime, timezone, timedelta
+    from datetime import datetime, timedelta, timezone
     kst = timezone(timedelta(hours=9))
     today_kst_midnight_utc = (
         datetime.combine(datetime.now(kst).date(), datetime.min.time(), tzinfo=kst)
@@ -570,7 +570,8 @@ async def _long_prewarm_subprocess() -> None:
     very next user query hits instantly.
     """
     import asyncio
-    from datetime import date as _date, timedelta
+    from datetime import date as _date
+    from datetime import timedelta
     await asyncio.sleep(20)  # give initial user traffic priority
     log.info("[long-prewarm-sp] starting (subprocess per domain)…")
     for domain in ("galaxy", "mars", "adult"):
@@ -649,7 +650,8 @@ async def prewarm_dashboards() -> None:
     데이터가 하루 1회 갱신되니까 같은 KST date 안에 이미 계산된 row 가 있으면
     재계산 안 함.  서버 재시작 후에도 즉시 응답."""
     import asyncio
-    from datetime import date as _date, timedelta
+    from datetime import date as _date
+    from datetime import timedelta
     await asyncio.sleep(2)
     log.info("[prewarm] starting…")
     # 무거운 메타 lazy load — rating_prediction 일자별 사전 집계 (244M → 작은 집계)
@@ -797,7 +799,7 @@ async def lifespan(app: FastAPI):
 async def _daily_prewarm_loop() -> None:
     """Sleep until next KST 04:00 then run prewarm_dashboards(). Repeats forever."""
     import asyncio
-    from datetime import datetime, timezone, timedelta
+    from datetime import datetime, timedelta, timezone
     KST = timezone(timedelta(hours=9))
     while True:
         try:
@@ -819,8 +821,9 @@ async def _daily_prewarm_loop() -> None:
 
 async def _periodic_cleanup() -> None:
     """Hourly cleanup: chat sessions >7d, /tmp/eda/sess_* >24h."""
-    import asyncio, shutil
-    from datetime import datetime, timezone, timedelta
+    import asyncio
+    import shutil
+    from datetime import datetime, timedelta, timezone
     while True:
         try:
             await asyncio.sleep(60)  # initial delay
@@ -892,10 +895,10 @@ async def health() -> dict[str, str]:
 
 # ── Prometheus metrics ─────────────────────────────────────────────
 try:
+    from prometheus_client import CONTENT_TYPE_LATEST as _PROM_CT
     from prometheus_client import Counter as _PromCounter
     from prometheus_client import Histogram as _PromHistogram
     from prometheus_client import generate_latest as _prom_dump
-    from prometheus_client import CONTENT_TYPE_LATEST as _PROM_CT
     _PROM_AVAILABLE = True
 
     REQ_DURATION = _PromHistogram(
@@ -995,8 +998,8 @@ async def debug_page() -> StreamingResponse:
 
     DevTools 없이도 사이트가 정상인지 확인 가능. 모든 KPI / insights
     endpoint 직접 호출 + 결과 표시."""
-    import urllib.parse
-    from datetime import date as _date, timedelta
+    from datetime import date as _date
+    from datetime import timedelta
     rows = ["<h1>🔍 MOCHA Debug</h1><pre>"]
     rows.append(f"server time: {int(time.time())}s")
     rows.append(f"db_pool: {'OK' if db_pool else 'NONE'}")
@@ -1082,8 +1085,8 @@ def _chart_setup() -> Any:
     """matplotlib + Korean font + common rcParams. Returns plt module."""
     import matplotlib
     matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
     import matplotlib.font_manager as fm
+    import matplotlib.pyplot as plt
     for p in ("/usr/share/fonts/truetype/nanum/NanumGothic.ttf",
               str(BASE_DIR / "plugins/eda/skills/eda-figures/assets/fonts/malgun.ttf")):
         if Path(p).exists():
@@ -1125,7 +1128,7 @@ def _auto_bar_chart(items: list[dict], label_key: str, value_key: str,
         ax.spines["top"].set_visible(False); ax.spines["right"].set_visible(False)
         ax.grid(False)
         vmax = max(values) or 1
-        for bar, v in zip(bars, values):
+        for bar, v in zip(bars, values, strict=False):
             ax.text(bar.get_width() + vmax * 0.01, bar.get_y() + bar.get_height() / 2,
                     f"{int(v):,}" if v == int(v) else f"{v:.2f}",
                     va="center", fontsize=10, color="#333")
@@ -1150,7 +1153,7 @@ def _auto_line_chart(timeseries: list[dict], y_keys: list[str],
             ys = [float(r.get(yk, 0)) for r in timeseries]
             ax.plot(dates, ys, marker="o", linewidth=2,
                     color=_CHART_PALETTE[i % len(_CHART_PALETTE)], label=yk)
-            for x_i, y_i in zip(dates, ys):
+            for x_i, y_i in zip(dates, ys, strict=False):
                 ax.text(x_i, y_i, f"{int(y_i):,}", ha="center", va="bottom",
                         fontsize=9, color="#333")
         ax.spines["top"].set_visible(False); ax.spines["right"].set_visible(False)
@@ -1240,8 +1243,8 @@ async def kpi_series(
             domain, start_d, end_d,
             content_types=cts, action_types=ats, label=label,
         )
-    except KeyError:
-        raise HTTPException(status_code=404, detail=f"unknown KPI label: {label}")
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"unknown KPI label: {label}") from exc
 
 
 # ── AI insights ─────────────────────────────────────────────────
@@ -1675,7 +1678,8 @@ async def _stream_response(session_id: int, message: str) -> AsyncIterator[str]:
     MAX_DAYS = cfg.FAST_INLINE_MAX_DAYS
     if is_fast and domain in ("galaxy", "mars", "adult"):
         try:
-            from datetime import date as _date, timedelta
+            from datetime import date as _date
+            from datetime import timedelta
             rng = kpi_mod.available_range(domain)
             end_d = _date.fromisoformat(rng["max"])
             requested_days = max(1, int(classification.get("period_days", 7)))
@@ -2123,7 +2127,7 @@ async def archive_session(session_id: int) -> dict:
     # build markdown (export_session 과 동일 포맷)
     lines = [
         f"# {sess['title']}",
-        f"",
+        "",
         f"- 세션 #{sess['id']}",
         f"- 시작: {sess['created_at'].isoformat()}",
         f"- 메시지: {len(rows)}",
@@ -2141,19 +2145,19 @@ async def archive_session(session_id: int) -> dict:
         lines.append("")
     body = "\n".join(lines)
 
-    from datetime import date as _date
     import re as _re
+    from datetime import date as _date
     safe_title = _re.sub(r"[^\w가-힣\-]+", "_", sess["title"])[:60] or "session"
     date_dir = _ARCHIVE_ROOT / _date.today().isoformat()
     try:
         date_dir.mkdir(parents=True, exist_ok=True)
     except PermissionError as exc:
-        raise HTTPException(status_code=500, detail=f"archive write 권한 없음: {exc}")
+        raise HTTPException(status_code=500, detail=f"archive write 권한 없음: {exc}") from exc
     out_path = date_dir / f"{session_id:05d}_{safe_title}.md"
     try:
         out_path.write_text(body, encoding="utf-8")
     except OSError as exc:
-        raise HTTPException(status_code=500, detail=f"archive write 실패: {exc}")
+        raise HTTPException(status_code=500, detail=f"archive write 실패: {exc}") from exc
     log.info("[archive] session %d saved → %s (%d bytes)", session_id, out_path, len(body))
     return {
         "ok": True,
@@ -2182,7 +2186,7 @@ async def export_session(session_id: int, format: str = "md") -> StreamingRespon
         )
     lines = [
         f"# {sess['title']}",
-        f"",
+        "",
         f"- 세션 #{sess['id']}",
         f"- 시작: {sess['created_at'].isoformat()}",
         f"- 메시지: {len(rows)}",

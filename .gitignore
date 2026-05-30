@@ -29,6 +29,9 @@ htmlcov/
 core
 core.*
 
+# Legacy frograms subpath (working-tree 잔재 — main brunch 에서는 사용 X)
+users/
+
 # Large source images (PNG outputs are tracked; raw generated ones are not)
 Gemini_Generated_Image_*.png
 스크린샷*.png

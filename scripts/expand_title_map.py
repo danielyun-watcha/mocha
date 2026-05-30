@@ -87,7 +87,9 @@ def main() -> None:
             print(f"  batch {i // BATCH} failed: {exc}")
             continue
         new_map = dict(
-            zip(df_t["content"].astype(str).tolist(), df_t["title"].astype(str).tolist())
+            zip(df_t["content"].astype(str).tolist(),
+                df_t["title"].astype(str).tolist(),
+                strict=False)
         )
         title_map.update(new_map)
         fetched += len(new_map)

@@ -18,12 +18,12 @@ Wiring (deferred to caller):
 """
 from __future__ import annotations
 
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 import pandas as pd
 
 from data_sources import archive, bq
-
 
 # ── BQ table catalog ───────────────────────────────────────────────────
 # Compiled from datahub `search` results + remy-worker `remy/ds/bq/*.py`
