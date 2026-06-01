@@ -17,7 +17,7 @@ from typing import Any
 import asyncpg
 import httpx
 from claude_agent_sdk import ClaudeAgentOptions, query
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -162,6 +162,23 @@ async def _oauth_refresh_loop() -> None:
 _OAUTH_BACKOFF_S = (1, 2, 4)  # exponential — max 3 attempts per model
 _HAIKU_FALLBACK = "claude-haiku-4-5-20251001"
 
+# 모듈 공유 httpx client — connection pool / TLS 세션 재사용.
+# 이전엔 retry attempt 마다 새 AsyncClient 를 만들고 버려 매번 TLS 핸드셰이크 발생.
+_HTTP_CLIENT: httpx.AsyncClient | None = None
+
+
+def _get_http_client() -> httpx.AsyncClient:
+    global _HTTP_CLIENT
+    if _HTTP_CLIENT is None or _HTTP_CLIENT.is_closed:
+        _HTTP_CLIENT = httpx.AsyncClient(timeout=60.0)
+    return _HTTP_CLIENT
+
+
+@asynccontextmanager
+async def _shared_http_client() -> AsyncIterator[httpx.AsyncClient]:
+    """공유 client 대여 — 블록 종료 시 닫지 않음(다음 요청에서 재사용)."""
+    yield _get_http_client()
+
 
 async def stream_oauth_completion(
     model: str, system: str, user_msg: str, max_tokens: int = 2048,
@@ -209,7 +226,7 @@ async def stream_oauth_completion(
         for attempt, backoff_s in enumerate(_OAUTH_BACKOFF_S):
             usage = {"input_tokens": 0, "output_tokens": 0}
             try:
-                async with httpx.AsyncClient(timeout=60.0) as client:
+                async with _shared_http_client() as client:
                     async with client.stream(
                         "POST", "https://api.anthropic.com/v1/messages",
                         headers=headers, json=payload,
@@ -526,8 +543,12 @@ async def _lazy_prewarm_filters(domain: str, start_d, end_d) -> None:
     사용자가 default 진입 후 1-2분 안에 단일 필터 클릭 시 즉시 응답."""
     import asyncio
     key = (domain, start_d, end_d)
+    # asyncio 단일 스레드 + check~add 사이 await 없음 → race 없음.
+    # 장기 가동 시 rolling date 로 무한 증가 방지용 cap (초과 시 reset).
     if key in _LAZY_PREWARMED:
         return
+    if len(_LAZY_PREWARMED) >= 256:
+        _LAZY_PREWARMED.clear()
     _LAZY_PREWARMED.add(key)
     # serialize across all lazy prewarms (server overload 방지)
     global _LAZY_PREWARM_SEM
@@ -793,7 +814,10 @@ async def lifespan(app: FastAPI):
     cleanup_task.cancel()
     daily_prewarm_task.cancel()
     oauth_refresh_task.cancel()
-    await db_pool.close()
+    if _HTTP_CLIENT is not None and not _HTTP_CLIENT.is_closed:
+        await _HTTP_CLIENT.aclose()
+    if db_pool is not None:
+        await db_pool.close()
 
 
 async def _daily_prewarm_loop() -> None:
@@ -870,6 +894,19 @@ async def correlation_and_cache(request, call_next):
     finally:
         _request_id_ctx.reset(token)
     response.headers["x-request-id"] = rid
+    # 보안 헤더 — XSS backstop (DOMPurify 가 뚫려도 외부 script 차단), clickjacking 방지.
+    # script 는 전부 same-origin self-host. style/font 만 폰트 CDN(jsdelivr) 허용.
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "script-src 'self'; "
+        "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+        "font-src 'self' https://cdn.jsdelivr.net data:; "
+        "img-src 'self' data: blob:; "
+        "connect-src 'self'; "
+        "object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+    )
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
     path = request.url.path
     if path == "/" or path.startswith("/static/"):
         response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
@@ -998,7 +1035,6 @@ async def debug_page() -> StreamingResponse:
 
     DevTools 없이도 사이트가 정상인지 확인 가능. 모든 KPI / insights
     endpoint 직접 호출 + 결과 표시."""
-    from datetime import date as _date
     from datetime import timedelta
     rows = ["<h1>🔍 MOCHA Debug</h1><pre>"]
     rows.append(f"server time: {int(time.time())}s")
@@ -1007,8 +1043,10 @@ async def debug_page() -> StreamingResponse:
     rows.append("=== 도메인별 KPI / Insight cache 상태 ===")
     for domain in ("galaxy", "mars", "adult"):
         try:
-            rng = kpi_mod.available_range(domain)
-            end_d = _date.fromisoformat(rng["max"])
+            _, end_d = kpi_mod.available_range_dates(domain)
+            if end_d is None:
+                rows.append(f"  {domain:8s} no archive data")
+                continue
             start_d = end_d - timedelta(days=6)
             sum_key = ("summary", domain, start_d.isoformat(), end_d.isoformat(), tuple(), tuple())
             in_mem = "HIT" if kpi_mod._cache_get(sum_key) else "MISS"
@@ -1018,8 +1056,10 @@ async def debug_page() -> StreamingResponse:
     rows.append("")
     rows.append("=== Endpoints — click to test ===")
     for d in ("galaxy", "mars", "adult"):
-        rng = kpi_mod.available_range(d)
-        end_d = _date.fromisoformat(rng["max"])
+        _, end_d = kpi_mod.available_range_dates(d)
+        if end_d is None:
+            rows.append(f"  {d}: no archive data")
+            continue
         start_d = end_d - timedelta(days=6)
         qs = f"start={start_d}&end={end_d}"
         rows.append(f'  <a href="/api/kpi/{d}/summary?{qs}">summary {d}</a>')
@@ -1028,28 +1068,29 @@ async def debug_page() -> StreamingResponse:
     return StreamingResponse(iter(["\n".join(rows)]), media_type="text/html")
 
 
-# Per-request cache buster — browser 가 옛 JS 강제로 새로 받게.
-def _asset_v() -> str:
-    return str(int(time.time()))
+# Cache buster — 프로세스 시작 시각 (재시작 시에만 변경). 이전엔 매 요청
+# time.time() 이라 매초 값이 바뀌어 캐시버스트 의도를 스스로 무력화 + 매 요청
+# 디스크 read + replace 반복했음. 시작 시각 상수로 고정하고 HTML 은 1회만 렌더.
+_ASSET_V = str(int(time.time()))
+_INDEX_HTML: str | None = None
+
+
+def _render_index() -> str:
+    global _INDEX_HTML
+    if _INDEX_HTML is None:
+        html = (STATIC_DIR / "index.html").read_text()
+        for asset in ("style.css", "notion.css", "dashboard.js", "app.js", "i18n.js"):
+            html = html.replace(f"/static/{asset}", f"/static/{asset}?v={_ASSET_V}")
+        _INDEX_HTML = html
+    return _INDEX_HTML
 
 
 @app.get("/")
-async def root() -> StreamingResponse:
-    """Inject startup timestamp into static asset URLs so the browser
-    fetches fresh JS/CSS on every server restart (cache buster)."""
-    html = (STATIC_DIR / "index.html").read_text()
-    html = html.replace("/static/style.css", f"/static/style.css?v={_asset_v()}")
-    html = html.replace("/static/notion.css", f"/static/notion.css?v={_asset_v()}")
-    html = html.replace("/static/dashboard.js", f"/static/dashboard.js?v={_asset_v()}")
-    html = html.replace("/static/app.js", f"/static/app.js?v={_asset_v()}")
-    html = html.replace("/static/i18n.js", f"/static/i18n.js?v={_asset_v()}")
-    # mascot images now loaded via CSS background-image — no HTML rewrite needed.
-    # (kept as no-op for safety if old <img> tags reappear)
-    html = html.replace("/static/mascot.png\"", f"/static/mascot.png?v={_asset_v()}\"")
-    html = html.replace("/static/mascot-icon.png\"", f"/static/mascot-icon.png?v={_asset_v()}\"")
-    html = html.replace("/static/mocha-avatar.png\"", f"/static/mocha-avatar.png?v={_asset_v()}\"")
-    return StreamingResponse(
-        iter([html]),
+async def root() -> Response:
+    """Serve index.html with asset URLs version-stamped at startup (cache buster).
+    렌더 결과는 프로세스 수명 동안 캐시 — 재시작 시에만 새 버전."""
+    return Response(
+        content=_render_index(),
         media_type="text/html",
         headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
     )
@@ -1208,7 +1249,12 @@ async def kpi_summary(
         raise HTTPException(status_code=400, detail="end < start")
     cts = [c for c in (content_types or "").split(",") if c] or None
     ats = [a for a in (action_types or "").split(",") if a] or None
-    result = kpi_mod.summary(domain, start_d, end_d, content_types=cts, action_types=ats)
+    # cache miss 시 feather read + ~25 groupby 가 수초 → event loop 블로킹 방지.
+    # (pyarrow/pandas 는 C 영역에서 GIL 해제하므로 to_thread 가 실제로 loop 를 풀어줌)
+    import asyncio
+    result = await asyncio.to_thread(
+        kpi_mod.summary, domain, start_d, end_d, content_types=cts, action_types=ats
+    )
     # Lazy filter prewarm: 데모 안정 우선으로 비활성화 (CPU 126% 점유 → 페이지
     # 로딩 느려짐). 필터 클릭 시 첫 한 번만 ~30s 계산, 이후 캐시 hit.
     # 다시 켜려면 아래 두 줄 주석 해제.
@@ -1239,7 +1285,9 @@ async def kpi_series(
     cts = [c for c in (content_types or "").split(",") if c] or None
     ats = [a for a in (action_types or "").split(",") if a] or None
     try:
-        return kpi_mod.series_response(
+        import asyncio
+        return await asyncio.to_thread(
+            kpi_mod.series_response,
             domain, start_d, end_d,
             content_types=cts, action_types=ats, label=label,
         )
@@ -1293,8 +1341,11 @@ def _build_insight_prompt(summary: dict, series: dict) -> str:
 
 
 async def _generate_insights(domain: str, start_d, end_d, cts: list[str] | None) -> dict[str, Any]:
-    summary = kpi_mod.summary(domain, start_d, end_d, content_types=cts)
-    series = kpi_mod.series_response(domain, start_d, end_d, content_types=cts)
+    import asyncio
+    summary = await asyncio.to_thread(kpi_mod.summary, domain, start_d, end_d, content_types=cts)
+    series = await asyncio.to_thread(
+        kpi_mod.series_response, domain, start_d, end_d, content_types=cts
+    )
     prompt = _build_insight_prompt(summary, series)
 
     options = ClaudeAgentOptions(
@@ -1304,8 +1355,12 @@ async def _generate_insights(domain: str, start_d, end_d, cts: list[str] | None)
         permission_mode="bypassPermissions",
     )
     chunks: list[str] = []
+    deadline = time.time() + INSIGHT_TIMEOUT_S
     try:
         async for msg in query(prompt=prompt, options=options):
+            if time.time() > deadline:
+                log.warning("Insight generation timeout (%ds)", INSIGHT_TIMEOUT_S)
+                return {"bullets": [], "error": "LLM 타임아웃"}
             cls = type(msg).__name__
             if cls == "AssistantMessage":
                 for block in getattr(msg, "content", []) or []:
@@ -1473,6 +1528,11 @@ GATEWAY_MODEL = os.environ.get("MOCHA_GATEWAY_MODEL", "claude-haiku-4-5-20251001
 # OAuth direct + Haiku — subprocess CLI 우회로 turn 낭비 X, Sonnet 5h rate-limit 회피.
 FAST_LEAD_MODEL = os.environ.get("MOCHA_FAST_LEAD_MODEL", "claude-haiku-4-5-20251001")
 
+# query() async-for 가 SDK subprocess hang 시 무한 대기하지 않도록 wall-clock 상한.
+# slow-track(300s deadline) 과 동일 패턴 — 메시지 사이에서만 체크.
+GATEWAY_TIMEOUT_S = int(os.environ.get("MOCHA_GATEWAY_TIMEOUT_S", "30"))
+INSIGHT_TIMEOUT_S = int(os.environ.get("MOCHA_INSIGHT_TIMEOUT_S", "60"))
+
 # Note: output_format (Anthropic structured output) 적용 시도했으나 schema enum
 # 강제가 모델 reasoning 흐름을 깨뜨려 NARROW 질문 ("ml1m TOP 10") 도 broad_eda +
 # unknown 으로 fallback 분류 (3/3) → Lead 헛수고 → 107s 회귀. 자연어 JSON 유지.
@@ -1576,8 +1636,13 @@ async def gateway_classify(question: str) -> dict[str, Any]:
         permission_mode="bypassPermissions",
     )
     chunks: list[str] = []
+    deadline = time.time() + GATEWAY_TIMEOUT_S
     try:
         async for msg in query(prompt=question, options=options):
+            if time.time() > deadline:
+                log.warning("Gateway classify timeout (%ds) — slow track default", GATEWAY_TIMEOUT_S)
+                return {"track": "slow", "intent": "broad_eda",
+                        "summary": "분류 타임아웃 — slow track default"}
             cls = type(msg).__name__
             if cls == "AssistantMessage":
                 for block in getattr(msg, "content", []) or []:
@@ -1607,7 +1672,9 @@ async def gateway_classify(question: str) -> dict[str, Any]:
     return {"track": "slow", "intent": "broad_eda", "domain": "unknown", "summary": "분류 결과 파싱 실패"}
 
 
-async def _stream_response(session_id: int, message: str) -> AsyncIterator[str]:
+async def _stream_response(
+    session_id: int, message: str, request: Request | None = None
+) -> AsyncIterator[str]:
     _session_id_ctx.set(session_id)
     async with db_pool.acquire() as conn:
         sess = await conn.fetchrow(
@@ -1678,13 +1745,13 @@ async def _stream_response(session_id: int, message: str) -> AsyncIterator[str]:
     MAX_DAYS = cfg.FAST_INLINE_MAX_DAYS
     if is_fast and domain in ("galaxy", "mars", "adult"):
         try:
-            from datetime import date as _date
             from datetime import timedelta
-            rng = kpi_mod.available_range(domain)
-            end_d = _date.fromisoformat(rng["max"])
+            min_d, end_d = kpi_mod.available_range_dates(domain)
+            if end_d is None:
+                # 아카이브 데이터 없음 (CI/미마운트) → inline skip, tool-call fallback.
+                raise RuntimeError(f"no archive data for {domain}")
             requested_days = max(1, int(classification.get("period_days", 7)))
             actual_days = min(requested_days, MAX_DAYS)
-            min_d = _date.fromisoformat(rng["min"])
             start_d = max(end_d - timedelta(days=actual_days - 1), min_d)
             # SSE progress — 사용자에게 "지금 어디까지 진행됐는지" 보여주려는 의도.
             # KPI fetch 가 cache miss 일 때만 몇 초 이상 걸리고, hit 면 ms 단위로 끝남.
@@ -1721,6 +1788,9 @@ async def _stream_response(session_id: int, message: str) -> AsyncIterator[str]:
                 "capped": requested_days > actual_days,
                 "data": trimmed,
             }
+        except RuntimeError as exc:
+            # 데이터 부재 등 예상된 skip — traceback 없이 조용히 fallback.
+            log.info("fast-track inline skipped (%s); using tool-call mode", exc)
         except Exception:
             log.exception("fast-track KPI pre-fetch failed; falling back to tool-call mode")
 
@@ -1877,6 +1947,9 @@ async def _stream_response(session_id: int, message: str) -> AsyncIterator[str]:
             model=lead_model, system=fast_system, user_msg=message, max_tokens=2048,
             history=history or None,
         ):
+            if request is not None and await request.is_disconnected():
+                log.info("client disconnected mid-stream — aborting LLM stream")
+                break
             if kind == "text":
                 if first_token_ms is None:
                     first_token_ms = int((time.time() - t_llm) * 1000)
@@ -1932,6 +2005,9 @@ async def _stream_response(session_id: int, message: str) -> AsyncIterator[str]:
             model=lead_model, system=fast_system, user_msg=message, max_tokens=1024,
             history=None,
         ):
+            if request is not None and await request.is_disconnected():
+                log.info("client disconnected mid-stream — aborting LLM stream")
+                break
             if kind == "text":
                 if first_token_ms is None:
                     first_token_ms = int((time.time() - t_llm) * 1000)
@@ -1989,6 +2065,10 @@ async def _stream_response(session_id: int, message: str) -> AsyncIterator[str]:
 
     try:
         async for msg in query(prompt=message, options=options):
+            if request is not None and await request.is_disconnected():
+                log.info("client disconnected mid-stream — aborting slow-track query")
+                errored = True
+                break
             if time.time() > slow_deadline:
                 yield _sse_error(
                     "slow_track_timeout",
@@ -2094,9 +2174,11 @@ def _sse_error(code: str, message: str, **extra: Any) -> str:
 
 
 @app.post("/api/sessions/{session_id}/chat")
-async def chat(session_id: int, req: ChatRequest) -> StreamingResponse:
+async def chat(session_id: int, req: ChatRequest, request: Request) -> StreamingResponse:
+    if not db_pool:
+        raise HTTPException(status_code=503, detail="db unavailable")
     return StreamingResponse(
-        _stream_response(session_id, req.message),
+        _stream_response(session_id, req.message, request),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

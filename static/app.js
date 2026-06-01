@@ -18,22 +18,12 @@ const els = {
   send: document.getElementById("send-btn"),
 };
 
-// Markdown renderer setup
+// Markdown renderer setup.
+// NOTE: marked v14 dropped the `highlight` option (moved to marked-highlight),
+// so syntax highlighting was never actually applied — hljs is not loaded.
 marked.setOptions({
   gfm: true,
   breaks: true,
-  highlight(code, lang) {
-    if (lang && hljs.getLanguage(lang)) {
-      try {
-        return hljs.highlight(code, { language: lang }).value;
-      } catch {}
-    }
-    try {
-      return hljs.highlightAuto(code).value;
-    } catch {
-      return code;
-    }
-  },
 });
 
 function renderMarkdown(text) {
@@ -439,6 +429,7 @@ async function sendMessage(text) {
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();
     let sseBuf = "";
+    let sawTerminal = false;  // done/error 이벤트 수신 여부
 
     while (true) {
       const { done, value } = await reader.read();
@@ -454,8 +445,14 @@ async function sendMessage(text) {
         } catch {
           continue;
         }
+        if (payload.type === "done" || payload.type === "error") sawTerminal = true;
         handleEvent(payload, botContent, (text) => (buf += text));
       }
+    }
+    // 종료 이벤트(done/error) 없이 스트림이 끊기면 = 서버측 중단/연결 끊김.
+    // 조용히 잘린 답변을 완성본처럼 보여주지 않도록 명시한다.
+    if (!sawTerminal) {
+      buf += (buf ? "\n\n" : "") + "_⚠️ 응답이 완료 신호 없이 종료됐습니다 (연결 중단). 다시 시도해 주세요._";
     }
   } catch (err) {
     if (err.name === "AbortError") {
@@ -473,7 +470,7 @@ async function sendMessage(text) {
     state.streaming = false;
     state.abortController = null;
     setSendButtonMode("send");
-    fetchSessions();
+    fetchSessions().catch((e) => console.error("fetchSessions failed", e));
   }
 }
 
@@ -729,5 +726,5 @@ if (messagesEl) {
   });
 }
 
-fetchSessions();
+fetchSessions().catch((e) => console.error("fetchSessions failed", e));
 updateArchiveBtn();

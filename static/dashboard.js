@@ -4,6 +4,7 @@ const DASH = {
   domains: {},        // {galaxy: {label, range:{min,max}}, ...}
   charts: {},         // {[domain]: {ts: Chart, actions: Chart}}
   initialized: {},    // {[domain]: true}
+  lastData: {},       // {[domain]: 마지막 summary 응답 — 테마 토글 시 refetch 없이 재렌더}
   seriesCache: {},    // {[domain]: {key, dates, series, fmts}}
   activeQuery: {},    // {[domain]: latest queryKey, to drop stale responses}
   modalChart: null,
@@ -50,9 +51,14 @@ function setTheme(theme) {
   document.documentElement.dataset.theme = theme;
   try { localStorage.setItem("mocha:theme", theme); } catch {}
   applyChartTheme();
-  // Redraw existing charts so their grid/text use the new colors.
+  // Chart.js 는 생성 시점에 Chart.defaults 색을 굳히므로, 새 색을 적용하려면
+  // 차트를 다시 만들어야 한다. 단 full loadKpi 는 summary/series refetch + LLM
+  // insight 재호출(3-8s)까지 유발 → 캐시된 data 로 렌더만 재실행한다.
   for (const dom of Object.keys(DASH.charts)) {
-    if (DASH.activeQuery[dom]) loadKpi(dom);
+    if (DASH.activeQuery[dom] && DASH.lastData[dom]) {
+      renderKpi(dom, DASH.lastData[dom]);
+      paintSparklines(dom);  // seriesCache 로 sparkline 도 새 색으로 다시 그림
+    }
   }
   // Force-redraw modal chart if open
   const modal = document.getElementById("kpi-modal");
@@ -148,6 +154,20 @@ function mountKpiView(domain) {
   // Expand all-KPI modal
   node.querySelector(".kpi-expand-btn").addEventListener("click", () => openAllKpiModal(domain));
 
+  // KPI 카드 / metric 행 클릭 → 모달. 이벤트 위임으로 mount 시 1회만 바인딩
+  // (이전엔 renderKpi 마다 모든 카드/행에 addEventListener 재부착 — 테마 토글/새로고침
+  //  시 반복 비용). 컨테이너는 재렌더해도 유지되고 innerHTML 만 바뀐다.
+  const cardsWrap = node.querySelector(".kpi-cards");
+  if (cardsWrap) cardsWrap.addEventListener("click", (e) => {
+    const card = e.target.closest(".kpi-card[data-label]");
+    if (card) openKpiModal(domain, card.dataset.label, card.dataset.kind);
+  });
+  const metricTable = node.querySelector(".kpi-metric-table");
+  if (metricTable) metricTable.addEventListener("click", (e) => {
+    const tr = e.target.closest("tbody tr[data-label]");
+    if (tr) openKpiModal(domain, tr.dataset.label, tr.dataset.kind);
+  });
+
   // TOP panel tab switcher (콘텐츠 / 장르)
   node.querySelectorAll(".tab-switcher .tab").forEach((tab) => {
     tab.addEventListener("click", () => {
@@ -205,6 +225,7 @@ async function loadKpi(domain) {
     const r = await fetch(`/api/kpi/${domain}/summary?${params}`);
     if (!r.ok) throw new Error("HTTP " + r.status + " " + (await r.text()));
     const data = await r.json();
+    DASH.lastData[domain] = data;  // 테마 토글 시 재렌더용 (refetch/LLM 재호출 회피)
     // store last-loaded params on the view so modal can reuse them
     root.dataset.lastStart = start;
     root.dataset.lastEnd = end;
@@ -389,7 +410,7 @@ function renderKpi(domain, data) {
 
   const cardWrap = root.querySelector(".kpi-cards");
   cardWrap.innerHTML = hero.map((k) => `
-    <div class="kpi-card" data-kind="${escapeHtmlD(k.fmt)}" data-label="${escapeHtmlD(k.label)}">
+    <div class="kpi-card" style="cursor:pointer" data-kind="${escapeHtmlD(k.fmt)}" data-label="${escapeHtmlD(k.label)}">
       <div class="kpi-card-label">
         <span>${escapeHtmlD(k.label)}</span>
         <span class="kpi-card-delta">—</span>
@@ -398,11 +419,7 @@ function renderKpi(domain, data) {
       <div class="kpi-card-spark"></div>
     </div>
   `).join("");
-  // Hero card → click opens detail modal (same as table rows)
-  cardWrap.querySelectorAll(".kpi-card").forEach((card) => {
-    card.addEventListener("click", () => openKpiModal(domain, card.dataset.label, card.dataset.kind));
-    card.style.cursor = "pointer";
-  });
+  // 클릭 핸들러는 mountKpiView 의 위임 리스너가 처리 (여기서 재바인딩 안 함).
 
   // Right aside — summary panel + content_type checklist (galaxy) + data source
   renderAside(root, domain, data);
@@ -415,9 +432,7 @@ function renderKpi(domain, data) {
     : rest.slice(0, 5);
   const metricBody = root.querySelector(".kpi-metric-table tbody");
   metricBody.innerHTML = tableRows.map((k) => kpiRowHtml(k)).join("");
-  metricBody.querySelectorAll("tr").forEach((tr) => {
-    tr.addEventListener("click", () => openKpiModal(domain, tr.dataset.label, tr.dataset.kind));
-  });
+  // 행 클릭 → 모달: mountKpiView 의 .kpi-metric-table 위임 리스너가 처리.
 
   // Stash full KPI list (including hero) for the all-KPI modal
   DASH.fullKpis = DASH.fullKpis || {};

@@ -71,14 +71,20 @@ def _run_query(sql: str, params: dict[str, Any] | None = None) -> pd.DataFrame:
     from google.cloud import bigquery  # lazy
 
     client = _get_client()
+    # 서버측 하드 비용 상한 — 초과 시 BQ 가 job 을 실패시킴(과금 X).
+    # 기본 60GB: 비파티션 galaxy 스냅샷(~42GB) + 여유. override: BQ_MAX_BYTES_BILLED.
+    # 오발사 full-scan 이 청구로 이어지는 것을 방지 (현재 dispatch 는 Phase 1 미연결이나
+    # 향후 LLM 연결 시 가드로 작동).
+    max_bytes = int(os.environ.get("BQ_MAX_BYTES_BILLED", 60 * 1024 ** 3))
     job_config = bigquery.QueryJobConfig(
         query_parameters=_to_bq_params(params or {}),
+        maximum_bytes_billed=max_bytes,
     )
     job = client.query(sql, job_config=job_config)
     df = job.to_dataframe()
     log.info(
         "[bq] query done — rows=%d scanned=%s bytes job_id=%s",
-        len(df), f"{job.total_bytes_processed:,}", job.job_id,
+        len(df), f"{job.total_bytes_processed or 0:,}", job.job_id,
     )
     return df
 
