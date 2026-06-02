@@ -13,7 +13,7 @@
 │  ┌────────────────────────────────────────────────────┐  │
 │  │  🚦 Gateway (Sonnet, 1턴, ~6초)                   │  │
 │  │  JSON 분류:                                        │  │
-│  │   ├─ track:   fast | slow                         │  │
+│  │   ├─ track:   fast | deep                         │  │
 │  │   ├─ intent:  narrow_top_n | broad_eda | ab_test  │  │
 │  │   │           | report | interpretive_qa | ...     │  │
 │  │   ├─ domain:  ml_1m | watcha_main | adult         │  │
@@ -22,7 +22,7 @@
 │  └────────────────────────────────────────────────────┘  │
 │            ↓                              ↓               │
 │  ┌──────────────────────┐    ┌──────────────────────┐    │
-│  │  🏎️ Fast Track       │    │  🐢 Slow Track       │    │
+│  │  🏎️ Fast Track       │    │  🐢 Deep Track       │    │
 │  │  ──────────────       │    │  ──────────────       │    │
 │  │  단일 Lead (Sonnet)  │    │  Phase 1: 단일 Lead   │    │
 │  │  SYSTEM_PROMPT 의    │    │  Phase 2: Domain      │    │
@@ -68,7 +68,7 @@
 | `narrow_top_n` · `narrow_distribution` · `narrow_count` | fast | Bash 1회 pandas 직접 |
 | `interpretive_qa` (큰손/장르 등) | fast | cache or pandas |
 | `notion` · `small_talk` | fast | skill 또는 직접 |
-| `broad_eda` · `ab_test` · `report` | slow | (Phase 1) Lead 단일 / (Phase 2) Domain Expert |
+| `broad_eda` · `ab_test` · `report` | deep | (Phase 1) Lead 단일 / (Phase 2) Domain Expert |
 
 ## 도메인 격리 (Iron Rule)
 
@@ -157,8 +157,8 @@ mocha/
 |---|---|---|
 | **Phase 0** | 2026-05-20 초기 | Single Lead + 6 skills + multi-agent fan-out (over-engineering 으로 archive 처리) |
 | **Phase 1** ✓ | 2026-05-20 ~ 21 | Single Lead + Gateway + 4 templates + 도메인 격리 instructions |
-| **Phase 2** | 사내 데이터 권한 확정 시 | Slow track 에 Domain Expert Subagent 4명 spawn (`agents/domain_experts.py` 활성화) |
-| **Phase 3** | 검토 후 | (옵션) Reviewer Subagent — slow 답변 4축 검증 (trivial/duplicate/jargon/offtopic) |
+| **Phase 2** | 사내 데이터 권한 확정 시 | Deep track 에 Domain Expert Subagent 4명 spawn (`agents/domain_experts.py` 활성화) |
+| **Phase 3** | 검토 후 | (옵션) Reviewer Subagent — deep 답변 4축 검증 (trivial/duplicate/jargon/offtopic) |
 | **Phase 4** | 다음 | Semantic Cache (pgvector) + 사용자 노션 분석 자료 RAG |
 
 ## 비용·속도 측정 (Phase 1 기준)
@@ -167,7 +167,7 @@ mocha/
 |---|---|---|---|
 | Fast (narrow) | 16-21초 | ~$0.05 | 2-3 |
 | Fast (interpretive) | 20-30초 | ~$0.10 | 3-5 |
-| Slow (broad EDA) | 30-90초 | ~$0.3-0.7 | 5-10 |
-| Slow (A/B test) | 60-120초 | ~$0.5-1.0 | 7-15 |
+| Deep (broad EDA) | 30-90초 | ~$0.3-0.7 | 5-10 |
+| Deep (A/B test) | 60-120초 | ~$0.5-1.0 | 7-15 |
 
 Gateway 자체 ~6초 / $0.005 (모든 track 공통, Sonnet 1턴).

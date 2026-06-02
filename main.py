@@ -381,6 +381,7 @@ IRON RULE: never read outside the archive paths above. Ambiguous → ask user on
 
 {kpi_endpoint_guide}
 
+{semantic_layer}
 ## Sub-skills (standalone, only when really needed)
 Skill(eda-figures) themed charts · eda-overview basic stats · eda-casestudy TOP cases · eda-report Markdown · eda-intake brief · notion-publish.
 Simple stats/viz → pandas+matplotlib directly is faster. Sub-skill only when "themed consistency" or "standard report format" is required.
@@ -462,12 +463,23 @@ def build_system_prompt(domain: str = "unknown") -> str:
     Phase 2 부활 시 Domain Expert 의 system_prompt 와 일관된 구조.
     """
     spec = DOMAIN_SPECS.get(domain, DOMAIN_SPECS["unknown"])
+    # 시맨틱 레이어(지표 계약 + 용어집)를 해당 도메인만 주입 → 정의 일관성 + 토큰 절약.
+    # prompt domain(pedia/watcha_main) → semantic domain(galaxy/mars) 매핑.
+    sem_domain = {"pedia": "galaxy", "watcha_main": "mars", "adult": "adult"}.get(domain)
+    if sem_domain:
+        import semantic as _sem
+        semantic_layer = (
+            _sem.describe_metrics(sem_domain) + "\n" + _sem.describe_glossary(sem_domain)
+        )
+    else:
+        semantic_layer = ""
     # NOTE: .replace 사용 — str.format 은 시각화 룰의 `{...}` (plt.rcParams 등) 를
     # placeholder 로 잘못 해석해 KeyError. domain spec 은 단순 치환이 안전.
     return (
         SYSTEM_PROMPT_TEMPLATE
         .replace("{domain_block}", spec)
         .replace("{kpi_endpoint_guide}", KPI_ENDPOINT_GUIDE)
+        .replace("{semantic_layer}", semantic_layer)
     )
 
 db_pool: asyncpg.Pool | None = None
@@ -1537,7 +1549,7 @@ GATEWAY_MODEL = cfg.GATEWAY_MODEL  # single source: _Settings
 FAST_LEAD_MODEL = cfg.FAST_LEAD_MODEL  # single source: _Settings
 
 # query() async-for 가 SDK subprocess hang 시 무한 대기하지 않도록 wall-clock 상한.
-# slow-track(300s deadline) 과 동일 패턴 — 메시지 사이에서만 체크.
+# deep-track(300s deadline) 과 동일 패턴 — 메시지 사이에서만 체크.
 GATEWAY_TIMEOUT_S = int(os.environ.get("MOCHA_GATEWAY_TIMEOUT_S", "30"))
 INSIGHT_TIMEOUT_S = int(os.environ.get("MOCHA_INSIGHT_TIMEOUT_S", "60"))
 
@@ -1567,10 +1579,10 @@ _INTENT_KW = [
 _FAST_INTENTS = {"narrow_top_n", "narrow_distribution", "narrow_count",
                  "interpretive_qa", "notion", "small_talk",
                  # broad_eda 도 fast 로 — KPI inline 풍부함으로 처리.
-                 # slow track 은 Sonnet rate-limit + subprocess hang 위험 → 발표 안정성 우선.
+                 # deep track 은 Sonnet rate-limit + subprocess hang 위험 → 발표 안정성 우선.
                  "broad_eda"}
 
-# 시각화 요청 keywords — fast track 으로 분류돼도 강제로 slow 로 escalate
+# 시각화 요청 keywords — fast track 으로 분류돼도 강제로 deep 로 escalate
 # (chart 생성은 Bash + matplotlib 필요 → fast 의 allowed_tools=[] 로는 불가).
 _VIZ_KW = ["시각화", "차트", "그래프", "plot", "visualize", "chart", "그려"]
 
@@ -1615,7 +1627,7 @@ def _classify_local(question: str) -> dict[str, Any] | None:
         return None  # fallback to LLM gateway
     needs_viz = any(k in q for k in _VIZ_KW)
     # Charts now auto-generated in backend (fast track) — viz query stays fast.
-    track = "fast" if intent in _FAST_INTENTS else "slow"
+    track = "fast" if intent in _FAST_INTENTS else "deep"
     result = {"track": track, "intent": intent, "domain": domain,
               "summary": question.strip()[:80]}
     if needs_viz:
@@ -1648,9 +1660,9 @@ async def gateway_classify(question: str) -> dict[str, Any]:
     try:
         async for msg in query(prompt=question, options=options):
             if time.time() > deadline:
-                log.warning("Gateway classify timeout (%ds) — slow track default", GATEWAY_TIMEOUT_S)
-                return {"track": "slow", "intent": "broad_eda",
-                        "summary": "분류 타임아웃 — slow track default"}
+                log.warning("Gateway classify timeout (%ds) — deep track default", GATEWAY_TIMEOUT_S)
+                return {"track": "deep", "intent": "broad_eda",
+                        "summary": "분류 타임아웃 — deep track default"}
             cls = type(msg).__name__
             if cls == "AssistantMessage":
                 for block in getattr(msg, "content", []) or []:
@@ -1660,7 +1672,7 @@ async def gateway_classify(question: str) -> dict[str, Any]:
                 break
     except Exception:
         log.exception("Gateway classify failed")
-        return {"track": "slow", "intent": "broad_eda", "summary": "분류 실패 — slow track default"}
+        return {"track": "deep", "intent": "broad_eda", "summary": "분류 실패 — deep track default"}
 
     raw = "".join(chunks).strip()
     # JSON 추출
@@ -1670,14 +1682,14 @@ async def gateway_classify(question: str) -> dict[str, Any]:
         try:
             parsed = json.loads(m.group(0))
             # 최소 필드 검증 + default
-            if parsed.get("track") in ("fast", "slow") and "intent" in parsed:
+            if parsed.get("track") in ("fast", "deep") and "intent" in parsed:
                 parsed.setdefault("summary", "")
                 parsed.setdefault("domain", "unknown")
                 return parsed
         except json.JSONDecodeError:
             pass
     log.warning("Gateway returned unparseable response: %r", raw[:200])
-    return {"track": "slow", "intent": "broad_eda", "domain": "unknown", "summary": "분류 결과 파싱 실패"}
+    return {"track": "deep", "intent": "broad_eda", "domain": "unknown", "summary": "분류 결과 파싱 실패"}
 
 
 async def _stream_response(
@@ -1699,7 +1711,7 @@ async def _stream_response(
             message,
         )
 
-    # Gateway — Haiku 1턴으로 fast/slow + intent + domain 분류
+    # Gateway — Haiku 1턴으로 fast/deep + intent + domain 분류
     yield _sse("gateway", {"status": "classifying"})
     classification = await gateway_classify(message)
 
@@ -1737,7 +1749,7 @@ async def _stream_response(
         f"{viz_note}"
     )
     # fast 는 단순 통계 + 시각화 1-2장 (Bash 1 + 답변) → 12 turn.
-    # slow 는 broad/A/B test (Bash 5-8 + figures + report) → 30 turn.
+    # deep 는 broad/A/B test (Bash 5-8 + figures + report) → 30 turn.
     # Note: fast track 에서 tools=["Bash","Read","Write"] 로 제한 시도했으나
     # bypassPermissions 모드에서는 인자가 행동을 막지 못함 (Glob 호출됨). 롤백.
     is_fast = classification["track"] == "fast"
@@ -1747,6 +1759,7 @@ async def _stream_response(
     # fast track + 알려진 도메인 → KPI summary 를 pre-fetch 해서 prompt 에 inline.
     # → Lead 가 curl tool 호출 round-trip 1회 절약 + skills/plugin 로딩도 skip.
     fast_kpi_inline = None
+    scaffold_shown = False  # 확정 결과를 미리 화면에 띄웠는지 (프롬프트 dedup 용)
     # KPI summary 동기 fetch 시간이 기간에 비례. cap 자체는 큼 (default 1000) —
     # archive `available_range` 로 자동 clamp 되니까 사실상 archive 끝까지 cover.
     # 더 짧게 제한하려면 env `MOCHA_FAST_INLINE_MAX_DAYS`.
@@ -1777,6 +1790,19 @@ async def _stream_response(
                 "label": f"KPI 집계 완료 ({fetch_ms}ms)",
                 "elapsed_ms": fetch_ms,
             })
+            # 점진적 출력: AI 가 글 쓰기 전에 '확정 결과'를 먼저 화면에 띄운다.
+            # kpi_full(이미 로드됨) 위에서 용어 해석 → 조회기준 + 결과 블록 (재계산 X).
+            scaffold_shown = False
+            try:
+                import semantic as _sem
+                _scaf = _sem.answer_scaffold(message, domain, start_d, end_d, kpi_full)
+                if _scaf["criteria"]:
+                    yield _sse("criteria", {"text": _scaf["criteria"]})
+                for _r in _scaf["results"]:
+                    yield _sse("result", _r)
+                scaffold_shown = bool(_scaf["criteria"] or _scaf["results"])
+            except Exception:
+                log.exception("answer_scaffold failed (continuing without pre-result)")
             # 큰 시계열 / 메타 필드 제거 (top-N + 핵심 KPI + files_read + timeseries 만 남김)
             # timeseries 는 추이/distribution 질문 답변에 필수 → inline 유지.
             DROP = {"hourly_activity", "pareto_curve",
@@ -1931,6 +1957,13 @@ async def _stream_response(
             CHARTS=charts_str,
             FILES_STR=files_str,
         )
+        if scaffold_shown:
+            # 확정 수치/표는 이미 화면 상단에 표시됨 → 반복 금지, 인사이트 중심.
+            fast_system += (
+                "\n\n## 화면 선표시됨\n"
+                "핵심 수치·표는 이미 화면 상단에 확정 표시됨. 표를 장황히 다시 나열하지 말고, "
+                "차트(필요시) + 💡인사이트(왜 그런지/그래서 뭐) 중심으로 간결히 작성하라."
+            )
         # Conversation history — 직전 user/assistant 4개 turn (multi-turn context)
         history: list[dict] = []
         try:
@@ -2067,19 +2100,19 @@ async def _stream_response(
     # Slow track 안정성 가드:
     #  - 5분 hard timeout (subprocess hang 방지)
     #  - tool message 100개 초과 시 infinite-loop 의심 → abort
-    slow_deadline = time.time() + 300
+    deep_deadline = time.time() + 300
     tool_msg_count = 0
-    log.info("[slow-track] starting query (deadline 300s)")
+    log.info("[deep-track] starting query (deadline 300s)")
 
     try:
         async for msg in query(prompt=message, options=options):
             if request is not None and await request.is_disconnected():
-                log.info("client disconnected mid-stream — aborting slow-track query")
+                log.info("client disconnected mid-stream — aborting deep-track query")
                 errored = True
                 break
-            if time.time() > slow_deadline:
+            if time.time() > deep_deadline:
                 yield _sse_error(
-                    "slow_track_timeout",
+                    "deep_track_timeout",
                     "분석이 5분을 초과하여 중단됨. 더 좁은 질문으로 다시 시도.",
                 )
                 errored = True
@@ -2104,7 +2137,7 @@ async def _stream_response(
                         tool_msg_count += 1
                         if tool_msg_count > 100:
                             yield _sse_error(
-                                "slow_track_runaway",
+                                "deep_track_runaway",
                                 "tool 호출이 100회를 초과해 무한 루프 의심 — 중단",
                             )
                             errored = True
@@ -2170,6 +2203,17 @@ async def _stream_response(
                 "UPDATE sessions SET updated_at=NOW() WHERE id=$1",
                 session_id,
             )
+
+    # 조건부 Critic — deep-track 정상 답변만 독립 맥락에서 검증 (비차단 verdict 배지).
+    # registry 결정적 답(fast)은 정의=정답이라 제외. auto-retry 는 후속 단계.
+    try:
+        from agents import critic as _critic
+        if _critic.should_verify(classification.get("track", ""), errored, assistant_text):
+            yield _sse("status", {"stage": "verify", "label": "답변 자동 검증 중"})
+            verdict = await _critic.verify(message, assistant_text, domain, MODEL)
+            yield _sse("verdict", verdict)
+    except Exception:
+        log.exception("critic step failed (continuing)")
 
 
 def _sse(event_type: str, payload: dict[str, Any]) -> str:

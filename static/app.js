@@ -607,12 +607,108 @@ async function copyTableAsMd(table, btn) {
   setTimeout(() => (btn.textContent = original), 1500);
 }
 
+// ── 점진적 출력: 확정 결과 블록 (AI 텍스트 위에 먼저 표시) ──────────────
+const RESULT_COL_LABEL = {
+  user_id: "유저", revenue: "결제액", purchases: "건수", users: "유저",
+  events: "이벤트", name: "장르", title: "제목", content: "콘텐츠",
+  count: "건수", rating: "평점", value: "평점", share: "비중",
+  date: "날짜", hour: "시", meta_id: "ID", label: "구분",
+};
+function _fmtCell(k, v) {
+  if (typeof v === "number") {
+    if (k === "share") return (v * 100).toFixed(1) + "%";
+    return v.toLocaleString();
+  }
+  return v == null ? "—" : v;
+}
+function ensureResultBlock(botContent) {
+  let rb = botContent.previousElementSibling;
+  if (!rb || !rb.classList.contains("msg-result")) {
+    rb = document.createElement("div");
+    rb.className = "msg-result";
+    botContent.parentElement.insertBefore(rb, botContent);
+  }
+  return rb;
+}
+function renderCriteria(botContent, text) {
+  const rb = ensureResultBlock(botContent);
+  let c = rb.querySelector(".result-criteria");
+  if (!c) {
+    c = document.createElement("div");
+    c.className = "result-criteria";
+    rb.prepend(c);
+  }
+  c.textContent = "📋 " + text;
+  scrollToBottom();
+}
+function renderResult(botContent, ev) {
+  const rb = ensureResultBlock(botContent);
+  const block = document.createElement("div");
+  block.className = "result-block";
+  if (ev.kind === "table") {
+    const rows = Array.isArray(ev.rows) ? ev.rows : [];
+    if (!rows.length) return;
+    const cols = Object.keys(rows[0]).filter((k) => !k.startsWith("_"));
+    const head = cols.map((c) => `<th>${escapeHtml(RESULT_COL_LABEL[c] || c)}</th>`).join("");
+    const body = rows.map((r) =>
+      "<tr>" + cols.map((c) => `<td>${escapeHtml(String(_fmtCell(c, r[c])))}</td>`).join("") + "</tr>"
+    ).join("");
+    block.innerHTML =
+      `<div class="result-label">${escapeHtml(ev.label)}</div>` +
+      `<table class="result-table"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+  } else {
+    block.innerHTML =
+      `<div class="result-label">${escapeHtml(ev.label)}</div>` +
+      `<div class="result-value">${escapeHtml(ev.display == null ? "—" : String(ev.display))}</div>`;
+  }
+  if (Array.isArray(ev.caveats) && ev.caveats.length) {
+    const cv = document.createElement("div");
+    cv.className = "result-caveat";
+    cv.textContent = "⚠️ " + ev.caveats.join(" · ");
+    block.appendChild(cv);
+  }
+  rb.appendChild(block);
+  scrollToBottom();
+}
+
+// 조건부 Critic 검증 배지 (답변 아래)
+function renderVerdict(botContent, ev) {
+  let v = botContent.nextElementSibling;
+  if (!v || !v.classList.contains("msg-verdict")) {
+    v = document.createElement("div");
+    v.className = "msg-verdict";
+    botContent.parentElement.insertBefore(v, botContent.nextSibling);
+  }
+  const ok = !!ev.pass;
+  const conf = Math.round((ev.confidence || 0) * 100);
+  const issues = Array.isArray(ev.issues) ? ev.issues : [];
+  v.classList.toggle("verdict-ok", ok);
+  v.classList.toggle("verdict-warn", !ok);
+  let html = ok
+    ? `✅ 자동 검증 통과${conf ? ` · 신뢰도 ${conf}%` : ""}`
+    : `⚠️ 자동 검증 — 의문 ${issues.length}건${conf ? ` · 신뢰도 ${conf}%` : ""}`;
+  if (!ok && ev.summary) html += ` · ${escapeHtml(ev.summary)}`;
+  if (issues.length) {
+    html += "<ul class='verdict-issues'>" + issues.slice(0, 5).map((i) =>
+      `<li><b>${escapeHtml(i.dim || "")}</b> <span class="vsev">${escapeHtml(i.severity || "")}</span> ${escapeHtml(i.detail || "")}</li>`
+    ).join("") + "</ul>";
+  }
+  v.innerHTML = html;
+  scrollToBottom();
+}
+
 function handleEvent(ev, botContent, appendToBuf) {
   if (ev.type === "text") {
     appendToBuf(ev.text);
     botContent.dataset.raw = (botContent.dataset.raw || "") + ev.text;
     botContent.textContent = botContent.dataset.raw;
     scrollToBottom();
+  } else if (ev.type === "criteria") {
+    renderCriteria(botContent, ev.text);
+  } else if (ev.type === "result") {
+    renderResult(botContent, ev);
+  } else if (ev.type === "verdict") {
+    renderVerdict(botContent, ev);
   } else if (ev.type === "tool") {
     appendToolChip(ev.name, ev.input);
   } else if (ev.type === "gateway") {

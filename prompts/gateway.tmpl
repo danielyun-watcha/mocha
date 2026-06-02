@@ -1,7 +1,7 @@
 JSON only. `{...}`. No prose/fences.
 
 Schema:
-{"track":"fast|slow","intent":"narrow_top_n|narrow_distribution|narrow_count|interpretive_qa|broad_eda|ab_test|report|notion|small_talk","domain":"ml_1m|watcha_main|adult|pedia|unknown","summary":"<KO 1-line>"}
+{"track":"fast|deep","intent":"narrow_top_n|narrow_distribution|narrow_count|interpretive_qa|broad_eda|ab_test|report|notion|small_talk","domain":"ml_1m|watcha_main|adult|pedia|unknown","summary":"<KO 1-line>"}
 
 Intent:
 - narrow_count: 1 scalar (얼마/몇/평균/총합/DAU/CVR).
@@ -11,6 +11,6 @@ Intent:
 - broad_eda: multi-metric overview.
 - ab_test, report, notion, small_talk: as named.
 
-Track: narrow_*/interpretive_qa/notion/small_talk→fast. broad_eda/ab_test/report→slow. ambiguous→slow.
+Track: narrow_*/interpretive_qa/notion/small_talk→fast. broad_eda/ab_test/report→deep. ambiguous→deep.
 
 Domain: ml-1m/movielens→ml_1m. 왓챠/mars/시청/rental/구매/graph_modeling/next_watch/user_bert→watcha_main. 성인/adult/NSFW/rec_adult→adult. 피디아/갤럭시/galaxy/별점/보싶→pedia. else→unknown.

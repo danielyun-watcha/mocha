@@ -1,4 +1,4 @@
-"""Gateway routing accuracy 측정 — fast/slow / intent / domain.
+"""Gateway routing accuracy 측정 — fast/deep / intent / domain.
 
 mocha 의 gateway_classify() 를 직접 호출해서 expected vs predicted 비교.
 도메인 / track / intent 별 precision / recall + confusion 표.
@@ -38,8 +38,8 @@ TESTS: list[tuple[str, dict]] = [
     ("피디아 보싶 많이 받은 콘텐츠 TOP 10", {"track": "fast", "intent": "narrow_top_n", "domain": "pedia"}),
     ("피디아 1인당 평가 수 어떻게 돼?", {"track": "fast", "intent": "narrow_count", "domain": "pedia"}),
     ("rec_galaxy 어제 활성 유저", {"track": "fast", "intent": "narrow_count", "domain": "pedia"}),
-    ("rec_galaxy EDA 리포트 만들어줘", {"track": "slow", "intent": "broad_eda", "domain": "pedia"}),
-    ("피디아 데이터 전체 특성 분석", {"track": "slow", "intent": "broad_eda", "domain": "pedia"}),
+    ("rec_galaxy EDA 리포트 만들어줘", {"track": "deep", "intent": "broad_eda", "domain": "pedia"}),
+    ("피디아 데이터 전체 특성 분석", {"track": "deep", "intent": "broad_eda", "domain": "pedia"}),
     ("피디아 long tail 분석", {"track": "fast", "intent": "interpretive_qa", "domain": "pedia"}),
     ("rec_galaxy 큰손 유저 TOP 5", {"track": "fast", "intent": "narrow_top_n", "domain": "pedia"}),
     ("피디아 인기 감독 보여줘", {"track": "fast", "intent": "narrow_top_n", "domain": "pedia"}),
@@ -47,7 +47,7 @@ TESTS: list[tuple[str, dict]] = [
 
     # ── watcha_main / MARS (12) ─────────────────────
     ("왓챠에서 가장 많이 시청된 영화 TOP 10", {"track": "fast", "intent": "narrow_top_n", "domain": "watcha_main"}),
-    ("graph_modeling 시청 패턴 EDA", {"track": "slow", "intent": "broad_eda", "domain": "watcha_main"}),
+    ("graph_modeling 시청 패턴 EDA", {"track": "deep", "intent": "broad_eda", "domain": "watcha_main"}),
     ("왓챠 어제 DAU", {"track": "fast", "intent": "narrow_count", "domain": "watcha_main"}),
     ("user_bert mars play 1인당 추이", {"track": "fast", "intent": "narrow_distribution", "domain": "watcha_main"}),
     ("왓챠 시청율 어떻게 돼?", {"track": "fast", "intent": "narrow_count", "domain": "watcha_main"}),
@@ -55,7 +55,7 @@ TESTS: list[tuple[str, dict]] = [
     ("왓챠 CVR click→play", {"track": "fast", "intent": "narrow_count", "domain": "watcha_main"}),
     ("MARS 인기 배우 TOP 5", {"track": "fast", "intent": "narrow_top_n", "domain": "watcha_main"}),
     ("왓챠 재시청률 분석해줘", {"track": "fast", "intent": "interpretive_qa", "domain": "watcha_main"}),
-    ("graph_modeling EDA 리포트", {"track": "slow", "intent": "broad_eda", "domain": "watcha_main"}),
+    ("graph_modeling EDA 리포트", {"track": "deep", "intent": "broad_eda", "domain": "watcha_main"}),
     ("왓챠 본 서비스 일주일 추이", {"track": "fast", "intent": "narrow_distribution", "domain": "watcha_main"}),
     ("MARS 콘텐츠 타입별 시청 비율", {"track": "fast", "intent": "narrow_distribution", "domain": "watcha_main"}),
 
@@ -66,24 +66,24 @@ TESTS: list[tuple[str, dict]] = [
     ("rec_adult 매출 분포 분석", {"track": "fast", "intent": "narrow_distribution", "domain": "adult"}),
     ("adult CVR click→구매", {"track": "fast", "intent": "narrow_count", "domain": "adult"}),
     ("성인+ rental TOP 10", {"track": "fast", "intent": "narrow_top_n", "domain": "adult"}),
-    ("rec_adult EDA 전반", {"track": "slow", "intent": "broad_eda", "domain": "adult"}),
+    ("rec_adult EDA 전반", {"track": "deep", "intent": "broad_eda", "domain": "adult"}),
     ("성인관 재구매율 추이", {"track": "fast", "intent": "narrow_distribution", "domain": "adult"}),
     ("adult preview→구매 funnel", {"track": "fast", "intent": "interpretive_qa", "domain": "adult"}),
     ("성인+ heavy buyer 매출 점유", {"track": "fast", "intent": "interpretive_qa", "domain": "adult"}),
 
     # ── A/B test, report, notion (6) ────────────────
-    ("우리 abtest 결과 정리해줘", {"track": "slow", "intent": "ab_test", "domain": "unknown"}),
-    ("rec_galaxy A/B test 사후 분석", {"track": "slow", "intent": "ab_test", "domain": "pedia"}),
-    ("rec_adult LightGBM vs HSTU A/B", {"track": "slow", "intent": "ab_test", "domain": "adult"}),
+    ("우리 abtest 결과 정리해줘", {"track": "deep", "intent": "ab_test", "domain": "unknown"}),
+    ("rec_galaxy A/B test 사후 분석", {"track": "deep", "intent": "ab_test", "domain": "pedia"}),
+    ("rec_adult LightGBM vs HSTU A/B", {"track": "deep", "intent": "ab_test", "domain": "adult"}),
     ("이번 분석 노션에 올려줘", {"track": "fast", "intent": "notion", "domain": "unknown"}),
-    ("최근 분석 결과 마크다운 리포트", {"track": "slow", "intent": "report", "domain": "unknown"}),
-    ("piedia AB test 결과 리포트", {"track": "slow", "intent": "report", "domain": "pedia"}),
+    ("최근 분석 결과 마크다운 리포트", {"track": "deep", "intent": "report", "domain": "unknown"}),
+    ("piedia AB test 결과 리포트", {"track": "deep", "intent": "report", "domain": "pedia"}),
 
     # ── small talk / unknown / 모호 (5) ─────────────
     ("안녕", {"track": "fast", "intent": "small_talk", "domain": "unknown"}),
     ("뭐 할 수 있어?", {"track": "fast", "intent": "small_talk", "domain": "unknown"}),
-    ("데이터 좀 분석해줘", {"track": "slow", "intent": "broad_eda", "domain": "unknown"}),
-    ("우리 모델 성능 알려줘", {"track": "slow", "intent": "interpretive_qa", "domain": "unknown"}),
+    ("데이터 좀 분석해줘", {"track": "deep", "intent": "broad_eda", "domain": "unknown"}),
+    ("우리 모델 성능 알려줘", {"track": "deep", "intent": "interpretive_qa", "domain": "unknown"}),
     ("어떤 도메인이 가장 활발해?", {"track": "fast", "intent": "interpretive_qa", "domain": "unknown"}),
 ]
 

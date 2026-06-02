@@ -216,10 +216,10 @@ DOMAIN_EXPERTS: dict[str, AgentDefinition] = {
 #           agents=DOMAIN_EXPERTS,
 #       )
 #
-# 3. _stream_response 의 slow track 분기에서 Lead 가 spawn:
-#       if classification["track"] == "slow":
+# 3. _stream_response 의 deep track 분기에서 Lead 가 spawn:
+#       if classification["track"] == "deep":
 #           # Lead 의 SYSTEM_PROMPT 에 다음 추가:
-#           # "slow track 진입. Agent tool 로 다음 expert 호출:"
+#           # "deep track 진입. Agent tool 로 다음 expert 호출:"
 #           # "  - domain=watcha_main → spawn(watcha-main-expert)"
 #           # "  - domain=adult → spawn(adult-expert)"
 #           # "  - domain=pedia → spawn(pedia-expert)"
