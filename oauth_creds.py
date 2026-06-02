@@ -22,20 +22,34 @@ OAUTH_CRED_PATH = Path(
 )
 
 
+# mtime 기반 in-memory 캐시 — 매 LLM 요청마다 디스크 read/parse 회피.
+# 파일 변경(토큰 회전) 시 mtime 이 바뀌어 자동 무효화.
+_TOKEN_CACHE: dict = {"token": None, "expires_at": 0.0, "mtime": -1.0}
+
+
 def load_token() -> str | None:
     """Return current accessToken or None if missing/expired."""
+    try:
+        mtime = os.path.getmtime(OAUTH_CRED_PATH)
+    except OSError:
+        return None  # 파일 없음/접근 불가 — 예상된 상태, 조용히 None
+    now = time.time()
+    c = _TOKEN_CACHE
+    if c["token"] and c["mtime"] == mtime and now < c["expires_at"]:
+        return c["token"]
     try:
         with open(OAUTH_CRED_PATH) as f:
             d = json.load(f)
         oauth = d.get("claudeAiOauth", {})
         token = oauth.get("accessToken")
         expires_at = oauth.get("expiresAt", 0) / 1000.0  # ms → s
-        if not token or time.time() >= expires_at:
-            return None
-        return token
-    except Exception:
-        log.exception("OAuth token load failed")
+    except (OSError, json.JSONDecodeError, KeyError, TypeError):
+        log.warning("OAuth credential unreadable/malformed: %s", OAUTH_CRED_PATH)
         return None
+    c.update(token=token, expires_at=expires_at, mtime=mtime)
+    if not token or now >= expires_at:
+        return None
+    return token
 
 
 def expiry_seconds() -> float | None:
@@ -45,5 +59,5 @@ def expiry_seconds() -> float | None:
             d = json.load(f)
         exp = d.get("claudeAiOauth", {}).get("expiresAt", 0) / 1000.0
         return exp - time.time()
-    except Exception:
+    except (OSError, json.JSONDecodeError, KeyError, TypeError):
         return None

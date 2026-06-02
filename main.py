@@ -298,7 +298,7 @@ async def stream_oauth_completion(
 
 # 세션당 USD 캡 — 풀 EDA 1회 실측 ~$1.6, 2배 헤드룸으로 $3.
 # 폭주(무한 루프 등) 가드. 초과 시 ResultMessage(subtype="error_max_budget_usd").
-MAX_BUDGET_USD = float(os.environ.get("MOCHA_MAX_BUDGET_USD", "3.0"))
+MAX_BUDGET_USD = cfg.MAX_BUDGET_USD  # single source: _Settings
 # NOTE: TaskBudget(token pacing hint)은 beta header(task-budgets-2026-03-13) 가 필요해서
 # sonnet-4-6 같은 일반 모델에선 API 400. Opus 일부 버전만 지원. 안정성 위해 비활성.
 # max_budget_usd 만으로 폭주 가드 충분.
@@ -472,6 +472,10 @@ def build_system_prompt(domain: str = "unknown") -> str:
 
 db_pool: asyncpg.Pool | None = None
 
+# Detached background tasks (e.g. long-period prewarm) — ref 보관용.
+# 보관 안 하면 GC 가 실행 중 task 를 수거할 수 있고 shutdown 시 정리도 누락됨.
+_BG_TASKS: set = set()
+
 
 async def _hydrate_kpi_cache_from_db() -> None:
     """서버 startup 시 호출: DB 의 KPI summary/series 캐시를 in-memory 로 로드.
@@ -507,7 +511,7 @@ async def _hydrate_kpi_cache_from_db() -> None:
             if isinstance(sj, str): sj = json.loads(sj)
             pairs.append(("series", r["domain"], s_iso, e_iso, cts, sj))
     n = kpi_mod.hydrate_cache(pairs)
-    log.info(f"[hydrate] loaded {n} cache rows from DB (today KST)")
+    log.info(f"[hydrate] loaded {n} cache rows from DB (last 3 days, KST)")
     return n
 
 
@@ -737,7 +741,9 @@ async def prewarm_dashboards() -> None:
     # main asyncio loop / web server stays responsive (pandas GIL isolated
     # in the child process). Result lands in kpi_summary_cache (DB), main
     # hydrates it into in-memory on completion.
-    asyncio.create_task(_long_prewarm_subprocess())
+    _t = asyncio.create_task(_long_prewarm_subprocess())
+    _BG_TASKS.add(_t)
+    _t.add_done_callback(_BG_TASKS.discard)
 
 
 @asynccontextmanager
@@ -814,6 +820,8 @@ async def lifespan(app: FastAPI):
     cleanup_task.cancel()
     daily_prewarm_task.cancel()
     oauth_refresh_task.cancel()
+    for _t in list(_BG_TASKS):
+        _t.cancel()
     if _HTTP_CLIENT is not None and not _HTTP_CLIENT.is_closed:
         await _HTTP_CLIENT.aclose()
     if db_pool is not None:
@@ -1300,7 +1308,7 @@ async def kpi_series(
 # Insight prompt → prompts/insight.tmpl (편집 시 자동 재로드)
 
 
-INSIGHT_MODEL = os.environ.get("MOCHA_INSIGHT_MODEL", "claude-haiku-4-5-20251001")
+INSIGHT_MODEL = cfg.INSIGHT_MODEL  # single source: _Settings
 
 
 def _build_insight_prompt(summary: dict, series: dict) -> str:
@@ -1524,9 +1532,9 @@ async def get_messages(session_id: int) -> list[dict[str, Any]]:
 # Gateway prompt → prompts/gateway.tmpl
 
 
-GATEWAY_MODEL = os.environ.get("MOCHA_GATEWAY_MODEL", "claude-haiku-4-5-20251001")
+GATEWAY_MODEL = cfg.GATEWAY_MODEL  # single source: _Settings
 # OAuth direct + Haiku — subprocess CLI 우회로 turn 낭비 X, Sonnet 5h rate-limit 회피.
-FAST_LEAD_MODEL = os.environ.get("MOCHA_FAST_LEAD_MODEL", "claude-haiku-4-5-20251001")
+FAST_LEAD_MODEL = cfg.FAST_LEAD_MODEL  # single source: _Settings
 
 # query() async-for 가 SDK subprocess hang 시 무한 대기하지 않도록 wall-clock 상한.
 # slow-track(300s deadline) 과 동일 패턴 — 메시지 사이에서만 체크.
@@ -1967,7 +1975,7 @@ async def _stream_response(
                     usage_info = None
             elif kind == "error":
                 yield _sse_error("llm_stream_failed", payload_)
-                errored = True if "errored" in dir() else True
+                errored = True
                 break
         # 통합 답변 DB persist
         if full_text:
@@ -2189,24 +2197,8 @@ async def chat(session_id: int, req: ChatRequest, request: Request) -> Streaming
 _ARCHIVE_ROOT = Path(os.environ.get("MOCHA_ARCHIVE_ROOT", "/archive/mocha/sessions"))
 
 
-@app.post("/api/sessions/{session_id}/archive")
-async def archive_session(session_id: int) -> dict:
-    """현재 대화 markdown 으로 변환 후 `/archive/mocha/sessions/<date>/` 에 저장."""
-    if not db_pool:
-        raise HTTPException(status_code=503, detail="db unavailable")
-    async with db_pool.acquire() as conn:
-        sess = await conn.fetchrow(
-            "SELECT id, title, created_at FROM sessions WHERE id=$1", session_id
-        )
-        if not sess:
-            raise HTTPException(status_code=404, detail="session not found")
-        rows = await conn.fetch(
-            "SELECT role, content, created_at FROM messages WHERE session_id=$1 ORDER BY id ASC",
-            session_id,
-        )
-    if not rows:
-        raise HTTPException(status_code=400, detail="empty session — 대화 없음")
-    # build markdown (export_session 과 동일 포맷)
+def _session_to_markdown(sess, rows) -> str:
+    """세션 + 메시지 rows → markdown 문자열 (archive/export 공통 포맷)."""
     lines = [
         f"# {sess['title']}",
         "",
@@ -2225,7 +2217,27 @@ async def archive_session(session_id: int) -> dict:
         lines.append("")
         lines.append("---")
         lines.append("")
-    body = "\n".join(lines)
+    return "\n".join(lines)
+
+
+@app.post("/api/sessions/{session_id}/archive")
+async def archive_session(session_id: int) -> dict:
+    """현재 대화 markdown 으로 변환 후 `/archive/mocha/sessions/<date>/` 에 저장."""
+    if not db_pool:
+        raise HTTPException(status_code=503, detail="db unavailable")
+    async with db_pool.acquire() as conn:
+        sess = await conn.fetchrow(
+            "SELECT id, title, created_at FROM sessions WHERE id=$1", session_id
+        )
+        if not sess:
+            raise HTTPException(status_code=404, detail="session not found")
+        rows = await conn.fetch(
+            "SELECT role, content, created_at FROM messages WHERE session_id=$1 ORDER BY id ASC",
+            session_id,
+        )
+    if not rows:
+        raise HTTPException(status_code=400, detail="empty session — 대화 없음")
+    body = _session_to_markdown(sess, rows)
 
     import re as _re
     from datetime import date as _date
@@ -2266,25 +2278,7 @@ async def export_session(session_id: int, format: str = "md") -> StreamingRespon
             "SELECT role, content, created_at FROM messages WHERE session_id=$1 ORDER BY id ASC",
             session_id,
         )
-    lines = [
-        f"# {sess['title']}",
-        "",
-        f"- 세션 #{sess['id']}",
-        f"- 시작: {sess['created_at'].isoformat()}",
-        f"- 메시지: {len(rows)}",
-        "",
-        "---",
-        "",
-    ]
-    for r in rows:
-        role_label = "🧑 사용자" if r["role"] == "user" else "🤖 MOCHA"
-        lines.append(f"## {role_label}  ·  {r['created_at'].isoformat()}")
-        lines.append("")
-        lines.append(r["content"])
-        lines.append("")
-        lines.append("---")
-        lines.append("")
-    body = "\n".join(lines).encode("utf-8")
+    body = _session_to_markdown(sess, rows).encode("utf-8")
     fname = f"mocha-session-{session_id}.md"
     return StreamingResponse(
         iter([body]),

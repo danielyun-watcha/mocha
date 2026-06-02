@@ -538,32 +538,25 @@ function renderKpi(domain, data) {
       }).join("")
     : `<tr><td colspan="3" style="color:var(--ink-faint); text-align:center; padding:14px">데이터 없음</td></tr>`;
 
-  // Panel visibility per domain — strong hide
-  const setHidden2 = (sel, hide) => {
-    const el = root.querySelector(sel);
-    if (!el) return;
-    el.hidden = !!hide;
-    el.style.display = hide ? "none" : "";
-  };
-  setHidden2(".kpi-panel-top", false);          // 모든 도메인 노출
-  setHidden2(".kpi-panel-genre", !sup.genre);
-  setHidden2(".kpi-panel-rev-top", !sup.revenue);
-  setHidden2(".kpi-panel-meh-top", !sup.meh_top);
-  setHidden2(".kpi-panel-user-top", !sup.user_top);
-  setHidden2(".kpi-panel-actor", !sup.meta_top);
-  setHidden2(".kpi-panel-director", !sup.meta_top);
-
-  // Content-type donut (별도 row, ADULT 등 supports=False 면 숨김)
-  if (sup.ctype_donut) drawCtypeDonut(domain, root.querySelector(".chart-ctype"), root.querySelector(".donut-legend"), data.content_type_breakdown || []);
-
-  // Domain-specific panel visibility from backend `supports` spec
-  // Strong hide — set hidden + display:none so CSS / browser can't override
+  // Panel visibility — strong hide (hidden + display:none, CSS/브라우저 override 방지)
   const setHidden = (sel, hide) => {
     const el = root.querySelector(sel);
     if (!el) return;
     el.hidden = !!hide;
     el.style.display = hide ? "none" : "";
   };
+  setHidden(".kpi-panel-top", false);          // 모든 도메인 노출
+  setHidden(".kpi-panel-genre", !sup.genre);
+  setHidden(".kpi-panel-rev-top", !sup.revenue);
+  setHidden(".kpi-panel-meh-top", !sup.meh_top);
+  setHidden(".kpi-panel-user-top", !sup.user_top);
+  setHidden(".kpi-panel-actor", !sup.meta_top);
+  setHidden(".kpi-panel-director", !sup.meta_top);
+
+  // Content-type donut (별도 row, ADULT 등 supports=False 면 숨김)
+  if (sup.ctype_donut) drawCtypeDonut(domain, root.querySelector(".chart-ctype"), root.querySelector(".donut-legend"), data.content_type_breakdown || []);
+
+  // Domain-specific panel visibility from backend `supports` spec
   setHidden(".kpi-panel-rating", !sup.rating_dist);
   setHidden(".kpi-panel-revenue", !sup.revenue);
   setHidden(".kpi-panel-donut", !sup.ctype_donut);

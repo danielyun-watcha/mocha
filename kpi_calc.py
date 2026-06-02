@@ -46,8 +46,16 @@ CREATED_AT_COL = "created_at"
 
 # ── low-level helpers ───────────────────────────────────────────────────
 def _add_date_from_timestamp(df: pd.DataFrame, timestamp_col: str) -> pd.DataFrame:
-    """Add a `date` column derived from a unix-second timestamp column."""
-    return df.assign(date=pd.to_datetime(df[timestamp_col], unit="s").dt.date)
+    """Add a `date` column derived from a unix-second timestamp column.
+
+    KST(Asia/Seoul) 자정 기준 — kpi.py 의 date 버킷팅과 일치시킨다.
+    (이전엔 naive UTC 라 자정 부근 하루가 어긋났음)
+    """
+    return df.assign(
+        date=pd.to_datetime(df[timestamp_col], unit="s", utc=True)
+        .dt.tz_convert("Asia/Seoul")
+        .dt.date
+    )
 
 
 def _unique_count(df: pd.DataFrame, groupby_cols: list[str]) -> pd.DataFrame:
