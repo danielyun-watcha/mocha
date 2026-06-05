@@ -2194,6 +2194,10 @@ async def _stream_response(
 
     try:
         async for msg in query(prompt=message, options=options):
+            # runaway guard(아래 tool>100) 의 break 는 nested for 만 빠져나가므로
+            # 다음 iteration 진입 시 여기서 outer async-for 를 확실히 종료.
+            if errored:
+                break
             if request is not None and await request.is_disconnected():
                 log.info("client disconnected mid-stream — aborting deep-track query")
                 errored = True
