@@ -54,22 +54,38 @@ _CACHE_LOCK = threading.Lock()
 _CACHE_MAX = 30
 
 
+def _cat_prefix_int(s: pd.Series) -> pd.Series:
+    """content categorical("1:xxx") → content_type int(1).
+
+    category 라벨에서 한 번만 prefix 파싱 후 codes 로 broadcast — 행 수와 무관하게
+    O(n_categories). 52M행 `.astype(str).str.split` (수 초) 대비 수십 ms."""
+    cats = s.cat.categories
+    prefix = cats.str.split(":").str[0].astype("int64").to_numpy()
+    codes = s.cat.codes.to_numpy()
+    return pd.Series(prefix[codes], index=s.index)
+
+
 def _preprocess(df: pd.DataFrame, domain: str) -> pd.DataFrame:
     """Normalize action_type strings and pre-compute KST 'date' column.
 
-    Runs once per file (in cache).  Keeps subsequent KPI queries cheap."""
+    Runs once per file (in cache).  Keeps subsequent KPI queries cheap.
+
+    Perf: action_type/content 는 categorical 이므로 `.astype(str)` 로 전체 행을
+    문자열화하지 않는다. category 라벨 단위 연산(few categories) + codes broadcast
+    로 처리 — mars 월별 파일(52M행) 기준 ~9s → ~0.3s."""
     if domain == "mars" and "action_type" in df.columns:
-        at_str = df["action_type"].astype(str)
-        df = df[at_str.str.endswith(":MARS")].copy()
-        # Strip ":MARS" suffix: still keeps original CLICK / PLAY / WISH / etc.
+        # category 라벨 중 ":MARS" 로 끝나는 것만 골라 isin (행 단위 astype 회피).
+        # galaxy 이벤트가 같은 파일에 섞여 있어 :MARS 만 남긴다.
+        cats = df["action_type"].cat.categories
+        mars_cats = [c for c in cats if str(c).endswith(":MARS")]
+        df = df[df["action_type"].isin(mars_cats)].copy()
+        # ":MARS" suffix 제거 — category 라벨 rename (행 아닌 라벨 단위).
         df["action_type"] = (
-            df["action_type"].astype(str).str.split(":").str[0]
-            .astype("category")
+            df["action_type"].cat.remove_unused_categories()
+            .cat.rename_categories(lambda c: str(c).split(":")[0])
         )
-        # MARS: content_type column from content prefix ("1:xxx" → 1)
-        df["content_type"] = (
-            df["content"].astype(str).str.split(":").str[0].astype("int64")
-        )
+        # content_type ("1:xxx" → 1) — category prefix broadcast.
+        df["content_type"] = _cat_prefix_int(df["content"])
     elif domain == "galaxy" and "action_type" in df.columns:
         mapping = {1: "RATE", 2: "WISH", 6: "SEARCH", 7: "CLICK"}
         df = df.copy()
@@ -81,12 +97,21 @@ def _preprocess(df: pd.DataFrame, domain: str) -> pd.DataFrame:
         df = df.copy()
         df["action_type"] = df["action_type"].astype(str).str.upper().astype("category")
     # Pre-compute KST date string (used for daily groupby).
-    df["date"] = (
-        pd.to_datetime(df["timestamp"], unit="s", utc=True)
-        .dt.tz_convert("Asia/Seoul")
-        .dt.date.astype(str)
-    )
+    df["date"] = _kst_date_fast(df["timestamp"])
     return df
+
+
+def _kst_date_fast(ts: pd.Series) -> pd.Series:
+    """unix-sec Series → KST "YYYY-MM-DD" string Series.
+
+    `.dt.date.astype(str)` 는 행마다 python date 객체+문자열 생성(33M행 ~25s).
+    대신 (1) +9h 후 day 번호(int)로 floor, (2) 고유 day(1년=365개)만 문자열화,
+    (3) codes broadcast → 행 수 무관 수십 ms."""
+    import numpy as np
+    day = ((ts.to_numpy().astype("int64") + 32400) // 86400)  # KST day number
+    uniq, inv = np.unique(day, return_inverse=True)            # 고유 day만
+    labels = pd.to_datetime(uniq * 86400, unit="s").strftime("%Y-%m-%d").to_numpy()
+    return pd.Series(labels[inv], index=ts.index)
 
 
 # Result-level cache: 같은 (domain, start, end, content_types) query 가 다시 들어오면
@@ -925,6 +950,78 @@ def _load(specs: list[FileSpec], start: date, end: date, domain: str) -> pd.Data
     if len(parts) == 1:
         return parts[0]
     return pd.concat(parts, ignore_index=True)
+
+
+# ── Fast top-N path (DuckDB over columnar feather) ──────────────
+# 큰 윈도우(예: 1년)에서 full summary 는 12개 월별 파일(4GB)을 전부 preprocess +
+# 모든 panel 계산 → 13분. top-N 질문은 content/action_type/timestamp 3컬럼만
+# columnar 로 스캔 + DuckDB 집계 → 5~6초 (exact). 캐시/사전집계 불필요.
+
+def _raw_action_filter(domain: str, action: str) -> str:
+    """정규화된 action 라벨("PLAY"/"RATE"/...) → 해당 도메인 raw feather 의
+    action_type 값에 맞는 DuckDB WHERE 절 (raw 표현이 도메인마다 다름).
+
+      - mars  : "PLAY:MARS" 등 "{ACTION}:MARS" (galaxy 이벤트 섞여있어 :MARS 필수)
+      - adult : 소문자 "play"
+      - galaxy: int 코드 (RATE=1 WISH=2 SEARCH=6 CLICK=7)
+    """
+    a = action.upper()
+    if domain == "mars":
+        return f"action_type = '{a}:MARS'"
+    if domain == "adult":
+        return f"action_type = '{a.lower()}'"
+    if domain == "galaxy":
+        code = {"RATE": 1, "WISH": 2, "SEARCH": 6, "CLICK": 7}.get(a)
+        if code is None:
+            raise ValueError(f"galaxy action 미지원: {action}")
+        return f"action_type = {code}"
+    raise ValueError(f"domain 미지원: {domain}")
+
+
+def top_items(domain: str, action: str, start: date, end: date,
+              n: int = 10, content_types: list[int] | None = None) -> list[dict]:
+    """기간 내 `action` 가장 많이 발생한 콘텐츠 TOP N (exact, fast).
+
+    full summary 를 우회하고 content/action_type/timestamp 3컬럼만 columnar 로
+    읽어 DuckDB 로 집계. KST 자정 경계로 timestamp 필터(정확). content_types 지정
+    시 해당 content_type prefix 만 (1=Movie 2=TvSeason ...).
+
+    Returns: list of {content, title, count} — count desc.
+    """
+    import duckdb
+    import pyarrow as pa
+    import pyarrow.feather as feather
+
+    specs = _pick_files(_domain_files(domain), start, end)
+    if not specs:
+        return []
+    start_ts = int(datetime.combine(start, datetime.min.time(), tzinfo=KST).timestamp())
+    end_ts = int(datetime.combine(end + timedelta(days=1), datetime.min.time(), tzinfo=KST).timestamp())
+
+    tables = []
+    for s in specs:
+        try:
+            tables.append(feather.read_table(s.path, columns=["content", "action_type", "timestamp"]))
+        except Exception:
+            logger.exception("[top_items] read failed: %s", s.path)
+    if not tables:
+        return []
+    tbl = pa.concat_tables(tables)  # noqa: F841 — DuckDB 가 이름으로 참조
+
+    where = [_raw_action_filter(domain, action),
+             f"timestamp >= {start_ts}", f"timestamp < {end_ts}"]
+    if content_types:
+        likes = " OR ".join(f"content LIKE '{int(ct)}:%'" for ct in content_types)
+        where.append(f"({likes})")
+    sql = (
+        "SELECT content, count(*) AS cnt FROM tbl WHERE "
+        + " AND ".join(where)
+        + f" GROUP BY content ORDER BY cnt DESC LIMIT {int(n)}"
+    )
+    rows = duckdb.sql(sql).fetchall()
+    tm = _load_title_map()
+    return [{"content": str(c), "title": tm.get(str(c), ""), "count": int(cnt)}
+            for c, cnt in rows]
 
 
 # ── KPI calculators ─────────────────────────────────────────────

@@ -1587,6 +1587,32 @@ _FAST_INTENTS = {"narrow_top_n", "narrow_distribution", "narrow_count",
 _VIZ_KW = ["시각화", "차트", "그래프", "plot", "visualize", "chart", "그려"]
 
 
+def _infer_top_action(question: str, domain: str) -> str | None:
+    """narrow_top_n 질문에서 '무엇을 가장 많이?' 의 action 추론.
+
+    매칭되면 정규화 action 라벨(PLAY/RATE/WISH/SEARCH/CLICK) 반환 → kpi.top_items
+    fast path 로. 매칭 안되면 None → 기존 full summary fallback.
+    매출/구매(RENTAL/POSSESSION)는 별도 revenue 패널이 처리하므로 여기선 제외.
+    """
+    q = question.lower()
+    kw = {
+        "PLAY":   ["시청", "플레이", "play", "본 ", "재생", "감상", "많이 본"],
+        "RATE":   ["평가", "별점", "평점", "rate", "rating"],
+        "WISH":   ["보고싶", "위시", "wish", "찜"],
+        "SEARCH": ["검색", "search"],
+        "CLICK":  ["클릭", "click", "조회", "상세"],
+    }
+    for action, words in kw.items():
+        if any(w in q for w in words):
+            # 도메인이 지원하는 action 인지 확인
+            if action in kpi_mod.ACTION_TYPES.get(domain, []):
+                return action
+    # action 불명확 → 도메인 대표 action 으로 default (top_n 의도는 명확하므로)
+    if "인기" in q or "top" in q or "랭킹" in q or "순위" in q or "많이" in q:
+        return {"galaxy": "RATE", "mars": "PLAY", "adult": "PLAY"}.get(domain)
+    return None
+
+
 def _extract_period_days(question: str) -> int | None:
     """질문에서 기간 표현 추출 → 일수.  매칭 안되면 None (default 7일 사용)."""
     import re as _re
@@ -1692,6 +1718,11 @@ async def gateway_classify(question: str) -> dict[str, Any]:
     return {"track": "deep", "intent": "broad_eda", "domain": "unknown", "summary": "분류 결과 파싱 실패"}
 
 
+class _FastTopNDone(Exception):
+    """Sentinel — fast top-N(top_items) 경로가 fast_kpi_inline 을 채우고 나면
+    뒤따르는 full-summary 블록을 건너뛰기 위한 제어용 예외."""
+
+
 async def _stream_response(
     session_id: int, message: str, request: Request | None = None
 ) -> AsyncIterator[str]:
@@ -1778,6 +1809,44 @@ async def _stream_response(
             # KPI fetch 가 cache miss 일 때만 몇 초 이상 걸리고, hit 면 ms 단위로 끝남.
             t_fetch = time.time()
             import asyncio as _asyncio
+            # ── Fast top-N path ─────────────────────────────────────────
+            # narrow_top_n + action 추론 가능 → full summary(큰 윈도우 시 수 분)
+            # 대신 kpi.top_items (DuckDB, columnar). 1년 = ~15s, 30일 ~1.5s.
+            top_action = (_infer_top_action(message, domain)
+                          if classification.get("intent") == "narrow_top_n" else None)
+            if top_action is not None:
+                yield _sse("status", {
+                    "stage": "kpi_fetch",
+                    "label": f"{domain.upper()} {actual_days}일 {top_action} TOP 집계 중",
+                })
+                items = await _asyncio.to_thread(
+                    kpi_mod.top_items, domain, top_action, start_d, end_d, 10
+                )
+                fetch_ms = int((time.time() - t_fetch) * 1000)
+                log.info(f"[fast-inline:top_items] {domain} {top_action} "
+                         f"{start_d}~{end_d} ({actual_days}d) in {fetch_ms}ms")
+                yield _sse("status", {"stage": "kpi_done",
+                                      "label": f"TOP 집계 완료 ({fetch_ms}ms)",
+                                      "elapsed_ms": fetch_ms})
+                fast_kpi_inline = {
+                    "period": f"{start_d} ~ {end_d}",
+                    "source_path": {
+                        "galaxy": f"{kpi_mod.ARCHIVE}/rec_galaxy/behavior_logs/",
+                        "mars":   f"{kpi_mod.ARCHIVE}/user_bert/behavior_logs2/train/",
+                        "adult":  f"{kpi_mod.ARCHIVE}/rec_adult/behavior_logs/",
+                    }.get(domain, "—"),
+                    "period_days": actual_days,
+                    "requested_days": requested_days,
+                    "capped": requested_days > actual_days,
+                    "data": {
+                        "metric": f"{top_action} count (가장 많이 {top_action} 한 콘텐츠)",
+                        "top_items": items,
+                        "files_read": [Path(s.path).name
+                                       for s in kpi_mod._pick_files(
+                                           kpi_mod._domain_files(domain), start_d, end_d)],
+                    },
+                }
+                raise _FastTopNDone()  # full summary 경로 skip
             yield _sse("status", {
                 "stage": "kpi_fetch",
                 "label": f"{domain.upper()} {actual_days}일 KPI 집계 중",
@@ -1822,6 +1891,9 @@ async def _stream_response(
                 "capped": requested_days > actual_days,
                 "data": trimmed,
             }
+        except _FastTopNDone:
+            # top_items fast path 완료 — fast_kpi_inline 이미 채워짐. summary skip.
+            pass
         except RuntimeError as exc:
             # 데이터 부재 등 예상된 skip — traceback 없이 조용히 fallback.
             log.info("fast-track inline skipped (%s); using tool-call mode", exc)
