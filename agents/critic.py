@@ -77,8 +77,13 @@ def parse_verdict(raw: str) -> dict[str, Any]:
         return {"pass": True, "confidence": 0.0, "issues": [],
                 "summary": "검증 JSON 파싱 실패", "parsed": False}
     issues = d.get("issues") or []
+    # LLM 이 issues 를 list 가 아닌 형(문자열 등)으로 줄 수 있음 → 방어.
+    # (문자열이면 for 가 char 순회 → (char).get AttributeError 로 크래시)
+    if not isinstance(issues, list):
+        issues = []
     # high severity 가 있으면 강제로 pass=false (모델이 누락해도 보정)
-    has_high = any((i or {}).get("severity") == "high" for i in issues)
+    has_high = any((i or {}).get("severity") == "high"
+                   for i in issues if isinstance(i, dict))
     passed = bool(d.get("pass", True)) and not has_high
     try:
         conf = float(d.get("confidence", 0.0))
