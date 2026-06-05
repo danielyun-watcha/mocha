@@ -676,23 +676,33 @@ def _load_graph_meta() -> dict:
         return _GRAPH_META
 
 
-def _galaxy_mars_meta_top(df: pd.DataFrame, kind: str, n: int = 10) -> list[dict]:
-    """GALAXY/MARS — events 가중 인기 감독/배우 TOP N (이름 포함)."""
-    if df.empty or "content" not in df.columns:
-        return []
+def _galaxy_mars_meta_top(df: pd.DataFrame, kind: str, n: int = 10,
+                          content_counts: pd.Series | None = None) -> list[dict]:
+    """GALAXY/MARS — events 가중 인기 감독/배우 TOP N (이름 포함).
+
+    content_counts(content_str→event_count Series) 를 주면 df 대신 그걸 사용 —
+    summary_fast(DuckDB) 가 per-content 집계만 넘겨 재사용하기 위함.
+    """
     import numpy as np
+    if content_counts is None:
+        if df.empty or "content" not in df.columns:
+            return []
+        content_counts = df["content"].astype(str).value_counts()
+    if content_counts.empty:
+        return []
     meta = _load_graph_meta()
     contents = meta["contents"]
     cid_to_idx = meta["cid_to_idx"]
     cc = meta["credit_edges"]
     pn = meta["person_id_to_name"]
-    # df content → idx → events count
-    idx_series = df["content"].astype(str).map(cid_to_idx).dropna().astype(int)
-    if idx_series.empty:
+    # content → idx → events count
+    idx = content_counts.index.to_series().astype(str).map(cid_to_idx)
+    valid = idx.notna()
+    if not valid.any():
         return []
-    cnt = idx_series.value_counts()
     cnt_arr = np.zeros(len(contents), dtype=np.float64)
-    cnt_arr[cnt.index.values] = cnt.values
+    np.add.at(cnt_arr, idx[valid].astype(int).to_numpy(),
+              content_counts.to_numpy()[valid.to_numpy()])
     # filter credit edges by type. 0=director, 1/2=actor
     if kind == "director":
         type_mask = cc[:, 2] == 0
@@ -1030,6 +1040,261 @@ def top_items(domain: str, action: str, start: date, end: date,
     tm = _load_title_map()
     return [{"content": str(c), "title": tm.get(str(c), ""), "count": int(cnt)}
             for c, cnt in rows]
+
+
+# ── summary_fast — DuckDB 전면 집계 (summary() 와 동일 결과, ~26× 빠름) ──
+# 도메인별 raw feather → 정규화 base view SQL.
+#   action  : mars "PLAY:MARS"→"PLAY" / galaxy int→label / adult lower→UPPER
+#   ctype   : content prefix ("1:xxx"→"1")  (oracle _content_type_breakdown 과 동일)
+#   value   : galaxy=value, mars=rating, adult=NULL  (평점)
+#   kst_day : (ts+9h) 의 날짜, kst_hour : (ts+9h) 의 시
+_DUCK_COLS = {
+    "galaxy": ["user_id", "content", "action_type", "value", "timestamp"],
+    "mars":   ["user_id", "content", "action_type", "timestamp", "rating"],
+    "adult":  ["user_id", "content", "action_type", "timestamp"],
+}
+
+
+def _duck_base_select(domain: str, start_ts: int, end_ts: int) -> str:
+    """raw feather(tbl) → 정규화 base view SELECT (도메인별)."""
+    common_tail = (
+        f"strftime(to_timestamp(timestamp + 32400), '%Y-%m-%d') AS kst_date, "
+        f"CAST(((timestamp + 32400) % 86400) // 3600 AS INT) AS kst_hour, "
+        f"split_part(content, ':', 1) AS ctype "
+        f"FROM tbl WHERE timestamp >= {start_ts} AND timestamp < {end_ts}"
+    )
+    if domain == "mars":
+        return (
+            "SELECT user_id, content, split_part(action_type, ':', 1) AS action, "
+            f"rating AS value, {common_tail} AND action_type LIKE '%:MARS'"
+        )
+    if domain == "galaxy":
+        return (
+            "SELECT user_id, content, "
+            "CASE action_type WHEN 1 THEN 'RATE' WHEN 2 THEN 'WISH' "
+            "WHEN 6 THEN 'SEARCH' WHEN 7 THEN 'CLICK' ELSE 'OTHER' END AS action, "
+            f"value, {common_tail}"
+        )
+    if domain == "adult":
+        return (
+            "SELECT user_id, content, upper(action_type) AS action, "
+            f"NULL AS value, {common_tail}"
+        )
+    raise ValueError(f"domain 미지원: {domain}")
+
+
+def summary_fast(domain: str, start: date, end: date) -> dict:
+    """summary() 의 DuckDB 구현 — 동일 결과, 큰 윈도우에서 수십× 빠름.
+
+    GROUP-BY panel(kpis/actions/timeseries/content_type/hourly/top_contents/
+    top_users/genre/pareto/top_rated)은 DuckDB. rating_distribution/revenue/
+    meh/top_revenue 는 별도 source 함수 재사용. meta(배우·감독)는 per-content
+    count 를 numpy 로직에 넘겨 재사용.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    import duckdb
+    import pyarrow as pa
+    import pyarrow.feather as feather
+
+    specs = _pick_files(_domain_files(domain), start, end)
+    start_ts = int(datetime.combine(start, datetime.min.time(), tzinfo=KST).timestamp())
+    end_ts = int(datetime.combine(end + timedelta(days=1), datetime.min.time(), tzinfo=KST).timestamp())
+    cols = _DUCK_COLS[domain]
+
+    def _rd(path):
+        try:
+            return feather.read_table(path, columns=cols)
+        except Exception:
+            logger.exception("[summary_fast] read failed: %s", path)
+            return None
+
+    tables = []
+    if specs:
+        with ThreadPoolExecutor(max_workers=min(len(specs), 8)) as ex:
+            tables = [t for t in ex.map(lambda s: _rd(s.path), specs) if t is not None]
+    if not tables:
+        return summary(domain, start, end)  # 데이터 없음 — oracle fallback (빈 결과)
+
+    tbl = pa.concat_tables(tables)  # noqa: F841 — DuckDB 가 이름 참조
+    con = duckdb.connect()
+    con.execute("SET threads TO 8")
+    con.execute(f"CREATE TEMP VIEW base AS {_duck_base_select(domain, start_ts, end_ts)}")
+
+    # ── 스칼라 + ua (kpis 용) ───────────────────────────────────────────
+    n_events, n_users, n_contents = con.execute(
+        "SELECT count(*), count(DISTINCT user_id), count(DISTINCT content) FROM base"
+    ).fetchone()
+    if n_events == 0:
+        con.close()
+        return summary(domain, start, end)
+    ucpu = con.execute(
+        "SELECT avg(c) FROM (SELECT count(DISTINCT content) c FROM base GROUP BY user_id)"
+    ).fetchone()[0] or 0.0
+    # user×action pivot → 작은 pandas DataFrame (kpis 공식 재사용)
+    ua_long = con.execute(
+        "SELECT user_id, action, count(*) c FROM base GROUP BY user_id, action"
+    ).fetchdf()
+    ua = ua_long.pivot(index="user_id", columns="action", values="c").fillna(0).astype("int64")
+    kpis = _kpis_from_stats(int(n_events), ua, domain, int(n_users), int(n_contents), float(ucpu))
+
+    # ── action breakdown (value_counts 순서 = count desc) ───────────────
+    acts = con.execute(
+        "SELECT action, count(*) c FROM base GROUP BY action ORDER BY c DESC"
+    ).fetchall()
+    actions = [{"label": str(a), "count": int(c)} for a, c in acts]
+
+    # ── timeseries (일별) ──────────────────────────────────────────────
+    ts_rows = con.execute(
+        "SELECT kst_date, count(*) e, count(DISTINCT user_id) u "
+        "FROM base GROUP BY kst_date ORDER BY kst_date"
+    ).fetchall()
+    timeseries = [{"date": d, "events": int(e), "users": int(u)} for d, e, u in ts_rows]
+
+    # ── content_type breakdown (도넛) ──────────────────────────────────
+    ct_rows = con.execute(
+        "SELECT ctype, count(*) c FROM base GROUP BY ctype ORDER BY c DESC"
+    ).fetchall()
+    ctb = []
+    for code, cnt in ct_rows:
+        try:
+            label = CONTENT_TYPE_LABEL.get(int(code), code)
+        except (ValueError, TypeError):
+            label = code
+        ctb.append({"code": str(code), "label": str(label), "count": int(cnt)})
+
+    # ── hourly ─────────────────────────────────────────────────────────
+    hr_rows = con.execute(
+        "SELECT kst_hour, count(*) c FROM base GROUP BY kst_hour ORDER BY kst_hour"
+    ).fetchall()
+    hourly = [{"hour": int(h), "count": int(c)} for h, c in hr_rows]
+
+    # ── top_contents ───────────────────────────────────────────────────
+    tm = _load_title_map()
+    tc_rows = con.execute(
+        "SELECT content, count(*) e, count(DISTINCT user_id) u "
+        "FROM base GROUP BY content ORDER BY e DESC, content LIMIT 10"
+    ).fetchall()
+    top_contents = [{"content": str(c), "title": tm.get(str(c), ""),
+                     "events": int(e), "users": int(u)} for c, e, u in tc_rows]
+
+    # ── top_users (도메인별 metric — _top_users 와 동일 규칙) ──────────
+    if domain == "adult":
+        u_where = "action IN ('RENTAL','POSSESSION')"; u_metric = "결제"
+    elif domain == "mars":
+        has_play = con.execute("SELECT count(*) FROM base WHERE action='PLAY'").fetchone()[0]
+        u_where = "action='PLAY'" if has_play else "TRUE"
+        u_metric = "PLAY" if has_play else "활동"
+    else:
+        u_where = "TRUE"; u_metric = "활동"
+    tu_rows = con.execute(
+        f"SELECT user_id, count(*) e, count(DISTINCT content) c FROM base "
+        f"WHERE {u_where} GROUP BY user_id ORDER BY e DESC, user_id LIMIT 10"
+    ).fetchall()
+    top_users = [{"user_id": int(u), "events": int(e), "contents": int(c), "metric": u_metric}
+                 for u, e, c in tu_rows] if tu_rows else []
+
+    # ── genre (galaxy/mars) ────────────────────────────────────────────
+    top_genres = []
+    if domain in GENRE_DOMAINS:
+        gm = _load_genre_map()  # dict content_str → genre
+        gmap_df = pd.DataFrame(  # noqa: F841 — DuckDB join 용
+            {"content": list(gm.keys()), "genre": list(gm.values())})
+        gr = con.execute(
+            "SELECT COALESCE(g.genre,'미분류') genre, count(*) e, count(DISTINCT b.user_id) u "
+            "FROM base b LEFT JOIN gmap_df g USING (content) "
+            "GROUP BY 1 ORDER BY e DESC LIMIT 10"
+        ).fetchall()
+        top_genres = [{"name": str(n), "events": int(e), "users": int(u)} for n, e, u in gr]
+
+    # ── pareto ─────────────────────────────────────────────────────────
+    cc_rows = con.execute(
+        "SELECT count(*) c FROM base GROUP BY content ORDER BY c DESC"
+    ).fetchall()
+    counts = [r[0] for r in cc_rows]
+    pareto = []
+    if counts:
+        total = float(sum(counts))
+        cum = 0.0
+        cumlist = []
+        for c in counts:
+            cum += c
+            cumlist.append(cum / total)
+        for p in _PARETO_PCT:
+            nn = max(1, int(len(counts) * p))
+            pareto.append({"top_pct": p, "share": float(cumlist[nn - 1])})
+
+    # ── top_rated (galaxy/mars) — RATE 평균평점 ─────────────────────────
+    top_rated = []
+    if domain in ("galaxy", "mars"):
+        min_count = 10
+        rr = con.execute(
+            f"SELECT content, avg(value) m, count(*) c FROM base "
+            f"WHERE action='RATE' AND value BETWEEN 1 AND 10 GROUP BY content "
+            f"HAVING count(*) >= {min_count} ORDER BY m DESC, c DESC LIMIT 10"
+        ).fetchall()
+        if not rr:  # min_count 완화 (oracle 과 동일)
+            rr = con.execute(
+                f"SELECT content, avg(value) m, count(*) c FROM base "
+                f"WHERE action='RATE' AND value BETWEEN 1 AND 10 GROUP BY content "
+                f"HAVING count(*) >= {max(2, min_count // 5)} ORDER BY m DESC, c DESC LIMIT 10"
+            ).fetchall()
+        top_rated = [{"content": str(c), "title": tm.get(str(c), ""),
+                      "avg_rating": round(float(m), 2), "rate_count": int(cnt)}
+                     for c, m, cnt in rr]
+
+    # ── meta (배우/감독) — per-content count 를 numpy 로직에 ────────────
+    top_actors = top_directors = []
+    if domain in ("galaxy", "mars"):
+        pc = con.execute("SELECT content, count(*) c FROM base GROUP BY content").fetchdf()
+        cseries = pd.Series(pc["c"].to_numpy(), index=pc["content"].astype(str))
+        top_actors = _galaxy_mars_meta_top(pd.DataFrame(), "actor", content_counts=cseries)
+        top_directors = _galaxy_mars_meta_top(pd.DataFrame(), "director", content_counts=cseries)
+
+    # ── revenue/top_revenue ────────────────────────────────────────────
+    # mars: 별도 source(mars_tvod). adult: 결제(RENTAL/POSSESSION) 행만 작게
+    # 뽑아 기존 _adult_revenue/_adult_top_revenue_contents 재사용 (date 컬럼 필요).
+    if domain == "mars":
+        revenue = _mars_revenue(start, end)
+        top_revenue_contents = _mars_top_revenue_contents(start, end)
+    elif domain == "adult":
+        adf = con.execute(
+            "SELECT user_id, content, action AS action_type, kst_date AS date "
+            "FROM base WHERE action IN ('RENTAL','POSSESSION')"
+        ).fetchdf()
+        revenue = _adult_revenue(adf, domain)
+        top_revenue_contents = _adult_top_revenue_contents(adf, domain)
+    else:
+        revenue = {"available": False}
+        top_revenue_contents = []
+    con.close()
+
+    result = {
+        "domain": domain, "label": DOMAIN_LABEL.get(domain, domain),
+        "start": start.isoformat(), "end": end.isoformat(),
+        "content_types": [], "action_types": [],
+        "available_content_types": (GALAXY_CONTENT_TYPES if domain == "galaxy"
+                                     else MARS_CONTENT_TYPES if domain == "mars" else []),
+        "available_action_types": ACTION_TYPES.get(domain, []),
+        "hero_labels": HERO_LABELS.get(domain, []),
+        "table_priority": TABLE_PRIORITY.get(domain, []),
+        "kpis": kpis, "timeseries": timeseries, "actions": actions,
+        "top_contents": top_contents, "top_genres": top_genres,
+        "content_type_breakdown": ctb,
+        "rating_distribution": _rating_distribution(pd.DataFrame(), domain, start, end, None),
+        "hourly_activity": hourly, "pareto_curve": pareto,
+        "revenue": revenue,
+        "top_actors": top_actors, "top_directors": top_directors,
+        "top_revenue_contents": top_revenue_contents,
+        "top_rated_contents": top_rated,
+        "top_meh_contents": _top_meh_contents(domain, start, end),
+        "top_users": top_users,
+        "supports": SUPPORTS.get(domain, {}),
+        "supports_genre": domain in GENRE_DOMAINS,
+        "files_read": [Path(s.path).name for s in specs],
+        "elapsed_ms": 0,
+    }
+    return result
 
 
 # ── KPI calculators ─────────────────────────────────────────────
@@ -1373,16 +1638,19 @@ def _top_meh_contents(domain: str, start: date, end: date, n: int = 10) -> list[
 
 # ── domain-specific KPI sets ────────────────────────────────────
 
-def _galaxy_kpis(df: pd.DataFrame, ua: pd.DataFrame, n_users: int, n_contents: int) -> list[dict]:
+def _galaxy_kpis(n_events: int, ua: pd.DataFrame, n_users: int, n_contents: int,
+                 ucpu: float) -> list[dict]:
     """abtest framework `BaseKPIs` 기준만.
     archive 에 exposed 데이터 없어 CTR/CTRPU 는 측정 불가 → 제외.
+
+    df 대신 미리 계산된 스칼라(n_events, ucpu)를 받는다 — oracle(pandas) /
+    summary_fast(DuckDB) 양쪽이 같은 공식을 공유하기 위함.
     """
-    n_events = int(len(df))
     return [
         {"label": "Total events",     "value": n_events,                    "fmt": "int"},
         {"label": "active_users",     "value": n_users,                     "fmt": "int"},
         {"label": "Unique contents",  "value": n_contents,                  "fmt": "int"},
-        {"label": "UCPU",             "value": _ucpu(df, ua),               "fmt": "f2"},
+        {"label": "UCPU",             "value": ucpu,                        "fmt": "f2"},
         {"label": "총 RATE",          "value": int(ua["RATE"].sum()) if "RATE" in ua.columns else 0, "fmt": "int"},
         {"label": "총 WISH",          "value": int(ua["WISH"].sum()) if "WISH" in ua.columns else 0, "fmt": "int"},
         {"label": "총 CLICK",         "value": int(ua["CLICK"].sum()) if "CLICK" in ua.columns else 0, "fmt": "int"},
@@ -1392,14 +1660,14 @@ def _galaxy_kpis(df: pd.DataFrame, ua: pd.DataFrame, n_users: int, n_contents: i
     ]
 
 
-def _mars_kpis(df: pd.DataFrame, ua: pd.DataFrame, n_users: int, n_contents: int) -> list[dict]:
+def _mars_kpis(n_events: int, ua: pd.DataFrame, n_users: int, n_contents: int,
+               ucpu: float) -> list[dict]:
     """abtest framework `BaseKPIs` 기준만 (exposed 없어 CTR 제외)."""
-    n_events = int(len(df))
     return [
         {"label": "Total events",     "value": n_events,                    "fmt": "int"},
         {"label": "active_users",     "value": n_users,                     "fmt": "int"},
         {"label": "Unique contents",  "value": n_contents,                  "fmt": "int"},
-        {"label": "UCPU",             "value": _ucpu(df, ua),               "fmt": "f2"},
+        {"label": "UCPU",             "value": ucpu,                        "fmt": "f2"},
         {"label": "총 PLAY",          "value": int(ua["PLAY"].sum()) if "PLAY" in ua.columns else 0, "fmt": "int"},
         {"label": "총 WISH",          "value": int(ua["WISH"].sum()) if "WISH" in ua.columns else 0, "fmt": "int"},
         {"label": "총 RATE",          "value": int(ua["RATE"].sum()) if "RATE" in ua.columns else 0, "fmt": "int"},
@@ -1410,12 +1678,12 @@ def _mars_kpis(df: pd.DataFrame, ua: pd.DataFrame, n_users: int, n_contents: int
     ]
 
 
-def _adult_kpis(df: pd.DataFrame, ua: pd.DataFrame, n_users: int, n_contents: int) -> list[dict]:
+def _adult_kpis(n_events: int, ua: pd.DataFrame, n_users: int, n_contents: int,
+                ucpu: float) -> list[dict]:
     """abtest framework `TvodKPIs` 기준만.
     REVENUE/AOV/ARPU 는 _adult_revenue() 에 별도 계산되어 'revenue' 필드로 노출.
     여기서는 BaseKPIs + CVR/CRPU/PUR (구매 전환).
     """
-    n_events = int(len(df))
     rentals = int(ua["RENTAL"].sum()) if "RENTAL" in ua.columns else 0
     possessions = int(ua["POSSESSION"].sum()) if "POSSESSION" in ua.columns else 0
     purch_sum = rentals + possessions
@@ -1438,7 +1706,7 @@ def _adult_kpis(df: pd.DataFrame, ua: pd.DataFrame, n_users: int, n_contents: in
         {"label": "Total events",   "value": n_events,                    "fmt": "int"},
         {"label": "active_users",   "value": n_users,                     "fmt": "int"},
         {"label": "Unique contents","value": n_contents,                  "fmt": "int"},
-        {"label": "UCPU",           "value": _ucpu(df, ua),               "fmt": "f2"},
+        {"label": "UCPU",           "value": ucpu,                        "fmt": "f2"},
         {"label": "총 CLICK",       "value": clicks,                      "fmt": "int"},
         {"label": "총 RENTAL",      "value": rentals,                     "fmt": "int"},
         {"label": "총 POSSESSION",  "value": possessions,                 "fmt": "int"},
@@ -1451,13 +1719,21 @@ def _adult_kpis(df: pd.DataFrame, ua: pd.DataFrame, n_users: int, n_contents: in
     ]
 
 
+def _kpis_from_stats(n_events: int, ua: pd.DataFrame, domain: str,
+                     n_users: int, n_contents: int, ucpu: float) -> list[dict]:
+    """미리 계산된 스칼라/ua 로 도메인별 KPI 리스트 조립.
+    oracle(pandas) 과 summary_fast(DuckDB) 가 공유하는 단일 공식 지점."""
+    if domain == "galaxy": return _galaxy_kpis(n_events, ua, n_users, n_contents, ucpu)
+    if domain == "mars":   return _mars_kpis(n_events, ua, n_users, n_contents, ucpu)
+    if domain == "adult":  return _adult_kpis(n_events, ua, n_users, n_contents, ucpu)
+    return []
+
+
 def _kpis_from_ua(
     df: pd.DataFrame, ua: pd.DataFrame, domain: str, n_users: int, n_contents: int
 ) -> list[dict]:
-    if domain == "galaxy": return _galaxy_kpis(df, ua, n_users, n_contents)
-    if domain == "mars":   return _mars_kpis(df, ua, n_users, n_contents)
-    if domain == "adult":  return _adult_kpis(df, ua, n_users, n_contents)
-    return []
+    return _kpis_from_stats(int(len(df)), ua, domain, n_users, n_contents,
+                            _ucpu(df, ua))
 
 
 def _kpis(df: pd.DataFrame, domain: str) -> list[dict]:
@@ -1603,15 +1879,32 @@ def summary(
     end: date,
     content_types: list[str] | None = None,
     action_types: list[str] | None = None,
+    _force_oracle: bool = False,
 ) -> dict:
     """fast path — 카드 / 표 값 / 시계열 / 액션 / TOP10.
 
-    응답 dict 자체를 LRU cache (RESULT_CACHE) 하므로 같은 query 재호출 시 즉시 hit."""
+    응답 dict 자체를 LRU cache (RESULT_CACHE) 하므로 같은 query 재호출 시 즉시 hit.
+    `_force_oracle=True` 면 DuckDB 위임 없이 pandas 경로 강제 (동일성 테스트 전용)."""
     cache_key = ("summary", domain, start.isoformat(), end.isoformat(),
                  tuple(content_types or []), tuple(action_types or []))
-    hit = _cache_get(cache_key)
-    if hit is not None:
-        return hit
+    if not _force_oracle:
+        hit = _cache_get(cache_key)
+        if hit is not None:
+            return hit
+
+    # 필터 없는 기본 조회는 DuckDB fast path (동일 결과, 큰 윈도우 8~16×).
+    # 실패 시(예: duckdb 미설치) 아래 pandas oracle 로 자동 fallback.
+    if (not _force_oracle and not content_types and not action_types
+            and domain in ("galaxy", "mars", "adult")):
+        try:
+            t0 = time.time()
+            res = summary_fast(domain, start, end)
+            res["elapsed_ms"] = int((time.time() - t0) * 1000)
+            _cache_put(cache_key, res)
+            return res
+        except Exception:
+            logger.exception("[summary] summary_fast failed; pandas oracle 로 fallback")
+
     t0 = time.time()
     df, picks = _load_filtered(domain, start, end, content_types, action_types)
     overall = _kpis(df, domain)
