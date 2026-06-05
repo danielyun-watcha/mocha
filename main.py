@@ -2085,6 +2085,22 @@ async def _stream_response(
         # 통합 답변 DB persist
         if full_text:
             assistant_text = "".join(full_text)
+            # 환각 검증 (deterministic, ms) — 답변 수치가 KPI 데이터에 근거하는지.
+            # 못 찾으면 ⚠️ 배지(SSE) + 로그. 재생성 안 함 (지연 0).
+            try:
+                import hallucheck
+                suspects = hallucheck.check(assistant_text, fast_kpi_inline.get("data", {}))
+                if suspects:
+                    log.warning("[hallucheck] %s sess=%d 의심 수치 %d개: %s",
+                                domain, session_id, len(suspects),
+                                [s["text"] for s in suspects][:8])
+                    yield _sse("warning", {
+                        "kind": "unverified_numbers",
+                        "items": [s["text"] for s in suspects][:8],
+                        "label": "데이터로 확인되지 않은 수치가 포함될 수 있습니다",
+                    })
+            except Exception:
+                log.exception("hallucheck failed (continuing)")
             async with db_pool.acquire() as conn:
                 await conn.execute(
                     "INSERT INTO messages(session_id, role, content) VALUES($1, 'assistant', $2)",

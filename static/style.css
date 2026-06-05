@@ -1298,6 +1298,13 @@ canvas.chart-ts, canvas.chart-actions {
 }
 .status-chip[data-status="in_progress"] { opacity: 0.75; font-style: italic; }
 .status-chip[data-status="done"] { opacity: 1; color: var(--ink-soft); }
+.warning-badge {
+  width: 100%; max-width: 760px; margin: 6px auto;
+  padding: 8px 12px; border-radius: 6px; font-size: 12px;
+  background: rgba(217, 119, 6, 0.12);
+  border: 1px solid rgba(217, 119, 6, 0.4);
+  color: #b45309;
+}
 .msg-row.error .msg-content {
   background: rgba(255, 107, 107, 0.10); border: 1px solid var(--danger);
   border-radius: var(--radius-sm); padding: 10px 14px; color: var(--danger);

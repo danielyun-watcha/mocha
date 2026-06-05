@@ -313,6 +313,17 @@ function appendToolChip(name, input) {
 // Render an inline "stage" chip (KPI fetch, LLM first token, etc.) so users
 // see progress while the backend works. *_done / llm_first_token events rewrite
 // the matching in-progress chip with the elapsed time.
+function appendWarningBadge(payload) {
+  // 환각 검증 경고 — 데이터로 확인 안 된 수치가 답변에 있을 수 있음.
+  const items = (payload.items || []).join(", ");
+  const div = document.createElement("div");
+  div.className = "warning-badge";
+  const label = payload.label || "확인되지 않은 내용이 포함될 수 있습니다";
+  div.textContent = items ? `⚠️ ${label}: ${items}` : `⚠️ ${label}`;
+  els.messages.appendChild(div);
+  scrollToBottom();
+}
+
 function appendStatusChip(payload) {
   const stage = payload.stage || "";
   const label = payload.label || stage;
@@ -715,6 +726,8 @@ function handleEvent(ev, botContent, appendToBuf) {
     appendGatewayChip(ev);
   } else if (ev.type === "status") {
     appendStatusChip(ev);
+  } else if (ev.type === "warning") {
+    appendWarningBadge(ev);
   } else if (ev.type === "error") {
     appendError(ev.error);
   } else if (ev.type === "done") {

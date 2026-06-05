@@ -129,3 +129,53 @@ def test_rating_distribution(pair, domain):
     od = {r["rating"]: r["count"] for r in o["rating_distribution"]}
     fd = {r["rating"]: r["count"] for r in f["rating_distribution"]}
     assert fd == od
+
+
+@pytest.mark.parametrize("domain", ["galaxy", "mars", "adult"])
+def test_pareto(pair, domain):
+    o, f = pair[domain]
+    od = {r["top_pct"]: r["share"] for r in o["pareto_curve"]}
+    fd = {r["top_pct"]: r["share"] for r in f["pareto_curve"]}
+    assert set(fd) == set(od)
+    for p, ov in od.items():
+        assert abs(fd[p] - ov) < 1e-6, f"{domain} pareto {p}: {fd[p]} != {ov}"
+
+
+@pytest.mark.parametrize("domain", ["galaxy", "mars"])
+def test_top_rated(pair, domain):
+    o, f = pair[domain]
+    # avg_rating + rate_count, tie 허용 (multiset)
+    fo = {r["content"]: (r["avg_rating"], r["rate_count"]) for r in o["top_rated_contents"]}
+    ff = {r["content"]: (r["avg_rating"], r["rate_count"]) for r in f["top_rated_contents"]}
+    assert len(ff) == len(fo)
+    for k in set(fo) & set(ff):
+        assert ff[k] == fo[k], f"{domain} top_rated {k}: {ff[k]} != {fo[k]}"
+    assert sorted(fo.values()) == sorted(ff.values())
+
+
+@pytest.mark.parametrize("domain,kind", [("galaxy", "top_actors"), ("galaxy", "top_directors"),
+                                         ("mars", "top_actors"), ("mars", "top_directors")])
+def test_meta(pair, domain, kind):
+    o, f = pair[domain]
+    # 배우/감독 — meta_id→count, tie 허용
+    fo = {r["meta_id"]: r["count"] for r in o[kind]}
+    ff = {r["meta_id"]: r["count"] for r in f[kind]}
+    assert len(ff) == len(fo)
+    for k in set(fo) & set(ff):
+        assert ff[k] == fo[k], f"{domain}.{kind} {k}: {ff[k]} != {fo[k]}"
+    assert sorted(fo.values()) == sorted(ff.values())
+
+
+def test_adult_revenue(pair):
+    o, f = pair["adult"]
+    orv, frv = o["revenue"], f["revenue"]
+    assert frv.get("available") == orv.get("available")
+    if orv.get("available"):
+        assert frv["total_revenue"] == orv["total_revenue"]
+        assert frv["paying_users"] == orv["paying_users"]
+    # top_revenue_contents — revenue/purchases 정확 일치 (tie 허용)
+    fo = {r["content"]: (r["revenue"], r["purchases"]) for r in o["top_revenue_contents"]}
+    ff = {r["content"]: (r["revenue"], r["purchases"]) for r in f["top_revenue_contents"]}
+    for k in set(fo) & set(ff):
+        assert ff[k] == fo[k]
+    assert sorted(fo.values()) == sorted(ff.values())

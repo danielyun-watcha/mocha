@@ -838,7 +838,11 @@ def _pareto_curve(df: pd.DataFrame) -> list[dict]:
     """콘텐츠 Top X% 가 events 의 몇 % 점유 — Long-tail 시각화."""
     if df.empty or "content" not in df.columns:
         return []
-    counts = df["content"].value_counts().sort_values(ascending=False)
+    # content 가 categorical 이면 value_counts 가 미관측(0건) 카테고리까지 포함해
+    # len(counts) 가 부풀려진다(→ top X% 의 n 과대 → share 왜곡). 실제 관측된
+    # 콘텐츠만 남긴다.
+    counts = df["content"].value_counts()
+    counts = counts[counts > 0].sort_values(ascending=False)
     total = float(counts.sum())
     if total <= 0 or len(counts) == 0:
         return []
@@ -1114,7 +1118,9 @@ def summary_fast(domain: str, start: date, end: date) -> dict:
         with ThreadPoolExecutor(max_workers=min(len(specs), 8)) as ex:
             tables = [t for t in ex.map(lambda s: _rd(s.path), specs) if t is not None]
     if not tables:
-        return summary(domain, start, end)  # 데이터 없음 — oracle fallback (빈 결과)
+        # 데이터 없음 — pandas oracle 로 빈 결과 생성. _force_oracle=True 필수:
+        # 안 주면 summary()→summary_fast()→여기 로 무한 재귀.
+        return summary(domain, start, end, _force_oracle=True)
 
     tbl = pa.concat_tables(tables)  # noqa: F841 — DuckDB 가 이름 참조
     con = duckdb.connect()
@@ -1127,7 +1133,7 @@ def summary_fast(domain: str, start: date, end: date) -> dict:
     ).fetchone()
     if n_events == 0:
         con.close()
-        return summary(domain, start, end)
+        return summary(domain, start, end, _force_oracle=True)  # 재귀 방지
     ucpu = con.execute(
         "SELECT avg(c) FROM (SELECT count(DISTINCT content) c FROM base GROUP BY user_id)"
     ).fetchone()[0] or 0.0
