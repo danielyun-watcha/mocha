@@ -42,6 +42,14 @@ logger = logging.getLogger("mocha.kpi")
 KST = timezone(timedelta(hours=9))
 
 
+def _validate_window(start: date, end: date) -> None:
+    """역전 윈도우(start > end) 차단. 거꾸로 된 날짜는 조용한 빈 결과(오답)
+    대신 명시적 ValueError. (같은 날 start==end 는 허용 — 하루 조회)"""
+    if start > end:
+        raise ValueError(f"잘못된 기간: start({start}) > end({end})")
+
+
+
 # ── file read cache (preprocessed) ──────────────────────────────
 # MARS monthly snapshots are 25M+ rows.  Cache the *normalized* form
 # (string action_type without :MARS suffix, KST date column added)
@@ -1006,6 +1014,7 @@ def top_items(domain: str, action: str, start: date, end: date,
     import pyarrow as pa
     import pyarrow.feather as feather
 
+    _validate_window(start, end)
     specs = _pick_files(_domain_files(domain), start, end)
     if not specs:
         return []
@@ -1101,6 +1110,7 @@ def summary_fast(domain: str, start: date, end: date) -> dict:
     import pyarrow as pa
     import pyarrow.feather as feather
 
+    _validate_window(start, end)
     specs = _pick_files(_domain_files(domain), start, end)
     start_ts = int(datetime.combine(start, datetime.min.time(), tzinfo=KST).timestamp())
     end_ts = int(datetime.combine(end + timedelta(days=1), datetime.min.time(), tzinfo=KST).timestamp())
@@ -1891,6 +1901,7 @@ def summary(
 
     응답 dict 자체를 LRU cache (RESULT_CACHE) 하므로 같은 query 재호출 시 즉시 hit.
     `_force_oracle=True` 면 DuckDB 위임 없이 pandas 경로 강제 (동일성 테스트 전용)."""
+    _validate_window(start, end)
     cache_key = ("summary", domain, start.isoformat(), end.isoformat(),
                  tuple(content_types or []), tuple(action_types or []))
     if not _force_oracle:

@@ -473,6 +473,13 @@ def build_system_prompt(domain: str = "unknown") -> str:
         )
     else:
         semantic_layer = ""
+    # archive-first 카탈로그 (도메인 범위 + BQ fallback 규칙) — deep-track agent 가
+    # archive 우선 / 범위 밖이면 BQ 를 판단하도록. describe_archive 는 캐싱됨(저비용).
+    try:
+        from agents import query_writer as _qw
+        archive_catalog = "\n\n" + _qw.describe_archive()
+    except Exception:
+        archive_catalog = ""
     # NOTE: .replace 사용 — str.format 은 시각화 룰의 `{...}` (plt.rcParams 등) 를
     # placeholder 로 잘못 해석해 KeyError. domain spec 은 단순 치환이 안전.
     return (
@@ -480,6 +487,7 @@ def build_system_prompt(domain: str = "unknown") -> str:
         .replace("{domain_block}", spec)
         .replace("{kpi_endpoint_guide}", KPI_ENDPOINT_GUIDE)
         .replace("{semantic_layer}", semantic_layer)
+        + archive_catalog
     )
 
 db_pool: asyncpg.Pool | None = None
@@ -811,6 +819,15 @@ async def lifespan(app: FastAPI):
         log.info("[startup] matplotlib pre-warmed")
     except Exception:
         log.exception("[startup] matplotlib pre-warm failed (continuing)")
+
+    # Archive 카탈로그 미리 캐싱 — 질문마다 도메인 범위 glob 안 하도록 startup 1회.
+    # (archive-first 판단을 빠르게: 접속 전 경로/범위 파악)
+    try:
+        from agents import query_writer as _qw
+        await asyncio.to_thread(_qw.describe_archive, True)
+        log.info("[startup] archive 카탈로그 캐싱 완료")
+    except Exception:
+        log.exception("[startup] archive 카탈로그 캐싱 실패 (continuing)")
 
     # Background prewarm — DB cache hit if today's row present, else compute
     prewarm_task = asyncio.create_task(prewarm_dashboards())

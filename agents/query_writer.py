@@ -185,6 +185,53 @@ def describe_capabilities() -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
+# archive 도메인 카탈로그 — archive-first 판단용. 범위는 런타임 조회(파일 기반)
+# 하되 한 번 계산 후 캐싱 (per-query glob 회피 → 속도).
+_ARCHIVE_DOMAINS = {
+    "galaxy": ("/archive/rec_galaxy/behavior_logs/",
+               "RATE/WISH/SEARCH/CLICK"),
+    "mars":   ("/archive/user_bert/behavior_logs2/train/",
+               "CLICK/PLAY/WISH/SEARCH/RATE (:MARS)"),
+    "adult":  ("/archive/rec_adult/behavior_logs/",
+               "click/preview/play/wish/rental/possession"),
+}
+_ARCHIVE_CATALOG_CACHE: str | None = None
+
+
+def describe_archive(refresh: bool = False) -> str:
+    """archive 도메인별 가용 범위 카탈로그 (system prompt 주입용).
+
+    LLM 이 'archive-first, 없으면 BQ' 를 판단하도록 도메인·기간·액션을 제공.
+    `kpi.available_range` 로 실범위 조회 후 캐싱 — startup 에서 1회 호출해 두면
+    질문마다 glob 안 함(속도).
+    """
+    global _ARCHIVE_CATALOG_CACHE
+    if _ARCHIVE_CATALOG_CACHE is not None and not refresh:
+        return _ARCHIVE_CATALOG_CACHE
+    import kpi  # lazy — archive 미마운트 환경에서 import-safe
+    lines = [
+        "## Archive 데이터 (1순위 — 빠름/무료). 없으면 BQ fallback.",
+        "",
+        "| 도메인 | 경로 | 범위 | 액션 |",
+        "|---|---|---|---|",
+    ]
+    for dom, (path, actions) in _ARCHIVE_DOMAINS.items():
+        try:
+            rng = kpi.available_range(dom)
+            span = f"{rng.get('min', '?')} ~ {rng.get('max', '?')}"
+        except Exception:
+            span = "(범위 조회 실패)"
+        lines.append(f"| {dom} | `{path}` | {span} | {actions} |")
+    lines += [
+        "",
+        "- 질문이 위 도메인·기간·액션 범위 안 → archive (dispatch `archive_*` 또는 KPI API).",
+        "- 범위 밖(특히 mars 는 max 이후가 stale) / country 필터 / 실시간 → BQ.",
+        "- MEH·mars TVOD 결제는 `/archive/mocha/` 에 dump 됨 (archive_mehs / mars revenue).",
+    ]
+    _ARCHIVE_CATALOG_CACHE = "\n".join(lines).rstrip() + "\n"
+    return _ARCHIVE_CATALOG_CACHE
+
+
 def describe_tables() -> str:
     """Return a markdown blurb of the underlying BQ table catalog.
 
@@ -214,4 +261,5 @@ __all__ = [
     "dispatch",
     "describe_capabilities",
     "describe_tables",
+    "describe_archive",
 ]
