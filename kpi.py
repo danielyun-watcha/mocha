@@ -37,6 +37,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from data_sources._archive_root import _resolve_archive_root
+
 logger = logging.getLogger("mocha.kpi")
 
 KST = timezone(timedelta(hours=9))
@@ -230,7 +232,7 @@ def _read_cached(path: str, domain: str) -> pd.DataFrame:
     return df
 
 
-ARCHIVE = Path(os.environ.get("ARCHIVE_DIR", "/mnt/ml-archive"))
+ARCHIVE = _resolve_archive_root()
 
 DOMAIN_LABEL = {
     "galaxy": "GALAXY · 왓챠피디아",

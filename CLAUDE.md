@@ -60,9 +60,11 @@ cron 이 하므로 실범위는 코드로 확인할 것**.
 ## 실행
 
 ```bash
-ARCHIVE_DIR=/archive IS_SANDBOX=1 DEV_PORT=8090 python3 _runtime/launch.py
+IS_SANDBOX=1 DEV_PORT=8090 python3 _runtime/launch.py
 ```
-- `ARCHIVE_DIR=/archive` 필수 (default `/mnt/ml-archive` 는 이 서버에 없음)
+- **archive 경로는 자동 해석** (`data_sources/_archive_root.py`): `ARCHIVE_DIR` 환경변수 →
+  없으면 marker(rec_galaxy/rec_adult/tutorial) 있는 `/archive` → `/mnt/ml-archive` 순.
+  즉 `/archive` 마운트만 돼 있으면 env·symlink 없이 동작. 강제 지정 시 `ARCHIVE_DIR=...`.
 - `IS_SANDBOX=1` 필수 — root 환경에서 claude-agent-sdk 의 `--dangerously-skip-permissions` 거부 회피 (deep track 동작)
 
 ## 테스트 / 린트

@@ -20,16 +20,16 @@ Schema-level reference for `MEH` content_type 256 (ShortSeason) — assigned
 from __future__ import annotations
 
 import logging
-import os
 from datetime import date, datetime, time, timedelta, timezone
-from pathlib import Path
 
 import pandas as pd
+
+from ._archive_root import _resolve_archive_root
 
 log = logging.getLogger("mocha.archive")
 
 KST = timezone(timedelta(hours=9))
-ARCHIVE_DIR = Path(os.environ.get("ARCHIVE_DIR", "/mnt/ml-archive"))
+ARCHIVE_DIR = _resolve_archive_root()
 
 # ── mocha 전용 archive 폴더 (다른 사내 task 와 격리) ─────────────────────
 MOCHA_ARCHIVE_DIR = ARCHIVE_DIR / "mocha"
