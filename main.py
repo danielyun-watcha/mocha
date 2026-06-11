@@ -18,7 +18,7 @@ import asyncpg
 import httpx
 from claude_agent_sdk import ClaudeAgentOptions, query
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -755,6 +755,39 @@ async def prewarm_dashboards() -> None:
                 log.info(f"[prewarm] {domain}: kpi {kpi_dur:.1f}s, insight cached ✓")
         except Exception:
             log.exception(f"[prewarm] {domain} failed")
+
+    # ── BQ/archive funnel dashboards (AdultPlus/SVOD/TVOD/Galaxy) prewarm ─
+    # 사용자 default 윈도우 = end:오늘, start:오늘-6. prewarm 도 동일하게 매치 (cache hit 보장).
+    # 추가로 어제 끝 윈도우도 prewarm (사용자가 어제까지로 좁혀 보는 케이스).
+    from datetime import datetime as _dt, timedelta, timezone
+    KST = timezone(timedelta(hours=9))
+    _today_kst = _dt.now(KST).date()
+    windows = [
+        (_today_kst - timedelta(days=6), _today_kst),                # 오늘 포함 7일 (default)
+        (_today_kst - timedelta(days=7), _today_kst - timedelta(days=1)),  # 어제 끝 7일
+    ]
+    for ap_start, ap_end in windows:
+        for tk in ("tvod_adultplus", "svod", "tvod_all"):
+            try:
+                t0 = time.time()
+                await asyncio.to_thread(
+                    kpi_mod.mars_adultplus_summary,
+                    ap_start, ap_end, 50, None, True, tk,
+                )
+                log.info(f"[prewarm] mars_{tk} {ap_start}~{ap_end}: {time.time()-t0:.1f}s ✓")
+            except Exception:
+                log.exception(f"[prewarm] mars_{tk} failed (continuing)")
+        # Galaxy archive-based funnel — 같은 윈도우
+        try:
+            t0 = time.time()
+            await asyncio.to_thread(
+                kpi_mod.galaxy_summary,
+                ap_start, ap_end, 50, None, True,
+            )
+            log.info(f"[prewarm] galaxy_funnel {ap_start}~{ap_end}: {time.time()-t0:.1f}s ✓")
+        except Exception:
+            log.exception("[prewarm] galaxy_funnel failed (continuing)")
+
     log.info("[prewarm] done")
 
     # Long-period (30d) prewarm — runs as **detached subprocess** so the
@@ -917,6 +950,102 @@ async def _periodic_cleanup() -> None:
 
 
 app = FastAPI(lifespan=lifespan, title="MOCHA")
+
+
+# ─── Preview password gate ──────────────────────────────────────────────
+# cloudflare 터널 등 외부 노출 preview 환경 보호용. 운영 (mocha.watcha.io) 은
+# ALB Cognito SSO 가 이미 인증 — env 미설정 시 middleware no-op 으로 영향 X.
+# 활성화: MOCHA_PREVIEW_PASSWORD=<비번> 환경변수 set.
+import hashlib as _hashlib
+import hmac as _hmac
+import secrets as _secrets
+
+_PREVIEW_PASSWORD = os.environ.get("MOCHA_PREVIEW_PASSWORD", "")
+# secret — 미설정 시 startup 시 random (휘발성). cookie 위조 차단용.
+_PREVIEW_SECRET = (os.environ.get("MOCHA_PREVIEW_SECRET")
+                   or _secrets.token_hex(32)).encode()
+_PREVIEW_COOKIE = "mocha_preview"
+# /health 는 cloudflared probe 가 호출하므로 게이트 면제. /preview-login 도.
+_PREVIEW_EXEMPT_PATHS = {"/health", "/preview-login", "/metrics"}
+
+
+def _preview_token() -> str:
+    return _hmac.new(_PREVIEW_SECRET, b"ok", _hashlib.sha256).hexdigest()
+
+
+_LOGIN_HTML = """<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>MOCHA · 잠금</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  html, body { margin:0; padding:0; height:100%; background:#0f1218; color:#e6e8ee;
+               font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+  body { display:flex; align-items:center; justify-content:center; }
+  form { background:#161a23; padding:36px 32px; border-radius:14px;
+         border:1px solid #262b38; width:320px; text-align:center; }
+  h1 { margin:0 0 6px; font-size:20px; font-weight:600; letter-spacing:0.3px; }
+  .sub { color:#9ba1b3; font-size:12px; margin-bottom:22px; }
+  input[type=password] { width:100%; box-sizing:border-box; padding:12px 14px;
+         border-radius:8px; border:1px solid #262b38; background:#0f1218;
+         color:#e6e8ee; font-size:16px; outline:none; }
+  input[type=password]:focus { border-color:#d97757; }
+  button { width:100%; margin-top:14px; padding:12px 14px; border-radius:8px;
+         border:none; background:#d97757; color:#fff; font-size:14px;
+         font-weight:500; cursor:pointer; }
+  button:hover { background:#b06545; }
+  .err { color:#ec5b8e; font-size:12px; margin-top:10px; min-height:14px; }
+</style>
+</head>
+<body>
+<form method="POST" action="/preview-login" autocomplete="off">
+  <h1>🔒 MOCHA Preview</h1>
+  <p class="sub">접근 비밀번호를 입력해주세요</p>
+  <input type="password" name="password" placeholder="비밀번호" autofocus>
+  <button type="submit">접속</button>
+  <div class="err">{{ERROR}}</div>
+</form>
+</body>
+</html>
+"""
+
+
+@app.middleware("http")
+async def preview_gate(request: Request, call_next):
+    if not _PREVIEW_PASSWORD:
+        return await call_next(request)  # 미설정 → no-op
+    path = request.url.path
+    if path in _PREVIEW_EXEMPT_PATHS:
+        return await call_next(request)
+    cookie = request.cookies.get(_PREVIEW_COOKIE)
+    if cookie and _hmac.compare_digest(cookie, _preview_token()):
+        return await call_next(request)
+    # 미인증 → login 페이지 (HTML) 반환. status 401 로 표시.
+    return HTMLResponse(_LOGIN_HTML.replace("{{ERROR}}", ""), status_code=401)
+
+
+@app.get("/preview-login")
+async def preview_login_get():
+    return HTMLResponse(_LOGIN_HTML.replace("{{ERROR}}", ""))
+
+
+@app.post("/preview-login")
+async def preview_login_post(request: Request):
+    if not _PREVIEW_PASSWORD:
+        return RedirectResponse("/", status_code=303)
+    form = await request.form()
+    pw = str(form.get("password", ""))
+    if not _hmac.compare_digest(pw, _PREVIEW_PASSWORD):
+        return HTMLResponse(
+            _LOGIN_HTML.replace("{{ERROR}}", "비밀번호가 맞지 않습니다"),
+            status_code=401,
+        )
+    resp = RedirectResponse("/", status_code=303)
+    resp.set_cookie(_PREVIEW_COOKIE, _preview_token(),
+                    httponly=True, samesite="lax",
+                    max_age=86400 * 7)  # 7일 유지
+    return resp
 
 
 @app.middleware("http")
@@ -1454,6 +1583,138 @@ def _filter_insights(bullets: list[str]) -> list[str]:
         if len(filtered) >= 4:
             break
     return filtered
+
+
+@app.get("/api/kpi/mars/adultplus/summary")
+async def kpi_mars_adultplus_summary(
+    start: str = Query(..., description="YYYY-MM-DD"),
+    end: str = Query(..., description="YYYY-MM-DD"),
+    top_n: int = Query(20, ge=1, le=100, description="title TOP N (max 100)"),
+    client: str | None = Query(None, description="client_type CSV (1=iOS, 2=Android, 3=Web)"),
+    country: str | None = Query(None, description="country_code CSV (KR, JP, ...)"),
+    subscribe: str | None = Query(None, description="subscribe status CSV (현재 no-op)"),
+    age_group: str | None = Query(None, description="age group CSV (현재 no-op)"),
+    force: bool = Query(False, description="캐시 우회 (사용자 새로고침)"),
+) -> dict[str, Any]:
+    """mars 추천 슬롯 안의 AdultPlus funnel KPI.
+
+    BQ `gretel.production_us.remy_mars_kpi_tod_adultplus_stats` 사용 (archive 없음).
+    독립 성인관 (`/api/kpi/adult/summary`) 와 다른 제품이므로 별도 엔드포인트.
+    """
+    try:
+        from datetime import date as _date
+        start_d = _date.fromisoformat(start)
+        end_d = _date.fromisoformat(end)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if end_d < start_d:
+        raise HTTPException(status_code=400, detail="end < start")
+    filters = {
+        "client": client, "country": country,
+        "subscribe": subscribe, "age_group": age_group,
+    }
+    import asyncio
+    try:
+        result = await asyncio.to_thread(
+            kpi_mod.mars_adultplus_summary, start_d, end_d, top_n, filters, force,
+        )
+    except Exception as exc:
+        log.exception("mars_adultplus_summary failed")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return result
+
+
+def _adultplus_filter_args(client, country, subscribe, age_group) -> dict[str, Any]:
+    return {"client": client, "country": country,
+            "subscribe": subscribe, "age_group": age_group}
+
+
+@app.get("/api/kpi/mars/svod/summary")
+async def kpi_mars_svod_summary(
+    start: str = Query(...), end: str = Query(...),
+    top_n: int = Query(50, ge=1, le=100),
+    client: str | None = Query(None),
+    country: str | None = Query(None),
+    subscribe: str | None = Query(None),
+    age_group: str | None = Query(None),
+    force: bool = Query(False),
+) -> dict[str, Any]:
+    """Mars SVOD (구독제) — `remy_mars_kpi_stats`. AdultPlus 와 동일 양식."""
+    from datetime import date as _date
+    try:
+        start_d = _date.fromisoformat(start); end_d = _date.fromisoformat(end)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if end_d < start_d:
+        raise HTTPException(status_code=400, detail="end < start")
+    filters = _adultplus_filter_args(client, country, subscribe, age_group)
+    import asyncio
+    try:
+        return await asyncio.to_thread(
+            kpi_mod.mars_svod_summary, start_d, end_d, top_n, filters, force,
+        )
+    except Exception as exc:
+        log.exception("mars_svod_summary failed")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.get("/api/kpi/galaxy/funnel/summary")
+async def kpi_galaxy_funnel_summary(
+    start: str = Query(...), end: str = Query(...),
+    top_n: int = Query(50, ge=1, le=100),
+    client: str | None = Query(None),
+    country: str | None = Query(None),
+    subscribe: str | None = Query(None),
+    age_group: str | None = Query(None),
+    force: bool = Query(False),
+) -> dict[str, Any]:
+    """Galaxy (왓챠피디아) — archive 기반 PDF-style funnel summary.
+    archive RATE/WISH/SEARCH/CLICK → mars_adultplus 와 동일 schema."""
+    from datetime import date as _date
+    try:
+        start_d = _date.fromisoformat(start); end_d = _date.fromisoformat(end)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if end_d < start_d:
+        raise HTTPException(status_code=400, detail="end < start")
+    filters = _adultplus_filter_args(client, country, subscribe, age_group)
+    import asyncio
+    try:
+        return await asyncio.to_thread(
+            kpi_mod.galaxy_summary, start_d, end_d, top_n, filters, force,
+        )
+    except Exception as exc:
+        log.exception("galaxy_summary failed")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.get("/api/kpi/mars/tvod/summary")
+async def kpi_mars_tvod_summary(
+    start: str = Query(...), end: str = Query(...),
+    top_n: int = Query(50, ge=1, le=100),
+    client: str | None = Query(None),
+    country: str | None = Query(None),
+    subscribe: str | None = Query(None),
+    age_group: str | None = Query(None),
+    force: bool = Query(False),
+) -> dict[str, Any]:
+    """Mars TVOD 전체 — `remy_mars_kpi_tod_stats`. AdultPlus 와 동일 양식."""
+    from datetime import date as _date
+    try:
+        start_d = _date.fromisoformat(start); end_d = _date.fromisoformat(end)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if end_d < start_d:
+        raise HTTPException(status_code=400, detail="end < start")
+    filters = _adultplus_filter_args(client, country, subscribe, age_group)
+    import asyncio
+    try:
+        return await asyncio.to_thread(
+            kpi_mod.mars_tvod_summary, start_d, end_d, top_n, filters, force,
+        )
+    except Exception as exc:
+        log.exception("mars_tvod_summary failed")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @app.get("/api/kpi/{domain}/insights")
@@ -2100,6 +2361,7 @@ async def _stream_response(
                 errored = True
                 break
         # 통합 답변 DB persist
+        suspects: list = []  # hallucheck 가 채움 (revise 게이트로 사용)
         if full_text:
             assistant_text = "".join(full_text)
             # 환각 검증 (deterministic, ms) — 답변 수치가 KPI 데이터에 근거하는지.
@@ -2289,8 +2551,10 @@ async def _stream_response(
     if not assistant_text:
         assistant_text = "(중단됨)" if errored else "(빈 응답)"
     async with db_pool.acquire() as conn:
-        await conn.execute(
-            "INSERT INTO messages(session_id, role, content) VALUES($1, 'assistant', $2)",
+        # RETURNING id — revise 시 race-free UPDATE 위해 INSERT 시점 id 캡쳐.
+        assistant_msg_id = await conn.fetchval(
+            "INSERT INTO messages(session_id, role, content) "
+            "VALUES($1, 'assistant', $2) RETURNING id",
             session_id,
             assistant_text,
         )
@@ -2314,13 +2578,38 @@ async def _stream_response(
             )
 
     # 조건부 Critic — deep-track 정상 답변만 독립 맥락에서 검증 (비차단 verdict 배지).
-    # registry 결정적 답(fast)은 정의=정답이라 제외. auto-retry 는 후속 단계.
+    # registry 결정적 답(fast)은 정의=정답이라 제외.
+    # Revise 게이트 (research-recommended): hallucheck 의심 AND critic high/med severity.
+    # intrinsic self-correction 함정(Huang ICLR'24, Kamoi TACL'24) 회피용 AND 조건.
     try:
         from agents import critic as _critic
         if _critic.should_verify(classification.get("track", ""), errored, assistant_text):
             yield _sse("status", {"stage": "verify", "label": "답변 자동 검증 중"})
             verdict = await _critic.verify(message, assistant_text, domain, MODEL)
             yield _sse("verdict", verdict)
+
+            # 1회 conditional revise — hallucheck 가 외부 신호로 의심 잡았고 + critic 동의 시
+            hint = _critic.build_revise_hint(verdict)
+            if hint and suspects:
+                yield _sse("status", {"stage": "revise", "label": "답변 정정 중"})
+                result = await _critic.revise(message, assistant_text, hint, domain, MODEL)
+                if result.get("ok"):
+                    yield _sse("revised", {
+                        "text": result["text"],
+                        "elapsed_s": round(result.get("elapsed_s", 0.0), 2),
+                        "hallucheck_count": len(suspects),
+                        "issue_count": len(verdict.get("issues") or []),
+                    })
+                    # 방금 INSERT 한 row 의 id 로 race-free UPDATE (audit 추가는 phase 2)
+                    if assistant_msg_id is not None:
+                        try:
+                            async with db_pool.acquire() as conn:
+                                await conn.execute(
+                                    "UPDATE messages SET content=$1 WHERE id=$2",
+                                    result["text"], assistant_msg_id,
+                                )
+                        except Exception:
+                            log.exception("revise DB update failed (revised text kept in SSE)")
     except Exception:
         log.exception("critic step failed (continuing)")
 

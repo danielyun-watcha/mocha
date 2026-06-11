@@ -133,7 +133,12 @@ function mountKpiView(domain) {
   if (meta.range.min) { startInp.min = meta.range.min; endInp.min = meta.range.min; }
   startInp.max = max; endInp.max = max;
 
-  node.querySelector(".kpi-refresh").addEventListener("click", () => loadKpi(domain));
+  node.querySelector(".kpi-refresh").addEventListener("click", () => {
+    // 명시적 새로고침 — AdultPlus cache 우회 (force=true 전달용 표시)
+    const root = container.querySelector(".kpi-view");
+    if (root) root.dataset.kpiForceRefresh = "1";
+    loadKpi(domain);
+  });
   startInp.addEventListener("change", () => loadKpi(domain));
   endInp.addEventListener("change", () => loadKpi(domain));
 
@@ -178,6 +183,720 @@ function mountKpiView(domain) {
       wrap.querySelector(".top10-contents").hidden = which !== "contents";
       wrap.querySelector(".top10-genres").hidden = which !== "genres";
     });
+  });
+
+  // galaxy/mars/adult 도메인 — 기존 표준 패널 모두 숨김.
+  // AI 인사이트 + range picker + 도메인별 커스텀 dashboard 만 노출.
+  // .kpi-aside 는 유지 (오른쪽 필터 sidebar 로 재사용).
+  if (domain === "adult" || domain === "mars" || domain === "galaxy") {
+    container.classList.add("custom-dashboard-only");
+    node.querySelectorAll(
+      ".kpi-basis-note, .kpi-cards-hero, .kpi-panel-chart, " +
+      ".kpi-row, .kpi-panel-revenue, .kpi-row-4col, " +
+      ".kpi-panel-donut, .kpi-foot"
+    ).forEach((el) => { el.style.display = "none"; });
+    // aside 안의 기존 panel 들 (summary / content_type filter / action filter)
+    // 도 hide — AdultPlus 필터로 교체.
+    node.querySelectorAll(".kpi-aside .aside-panel").forEach((el) => {
+      el.style.display = "none";
+    });
+    mountAdultplusFilters(node.querySelector(".kpi-aside"), domain);
+  }
+
+  // adult 도메인 — AdultPlus funnel (mars 추천 슬롯의 성인+) 마운트.
+  if (domain === "adult") {
+    mountMarsAdultplus(container);
+  }
+  // mars 도메인 — SVOD/TVOD 탭 UI 마운트.
+  if (domain === "mars") {
+    mountMarsTabs(container);
+  }
+  // galaxy 도메인 — archive 기반 funnel dashboard (AdultPlus 와 동일 양식)
+  if (domain === "galaxy") {
+    mountGalaxyFunnel(container);
+  }
+}
+
+// ── AdultPlus filters sidebar (PDF Datastudio 와 동일 4축) ──────────────
+// adult/mars 공용. 변경 시 dashboard refetch.
+
+const AP_FILTER_DEFS = [
+  {
+    key: "age_group", label: "Age groups",
+    options: [
+      { v: "18_24", label: "18-24" },
+      { v: "25_34", label: "25-34" },
+      { v: "35_44", label: "35-44" },
+      { v: "45_plus", label: "45+" },
+    ],
+  },
+  {
+    key: "client", label: "Clients",
+    options: [
+      { v: "1", label: "iOS" },
+      { v: "2", label: "Android" },
+      { v: "3", label: "Web" },
+    ],
+  },
+  {
+    key: "subscribe", label: "Subscribes",
+    options: [
+      { v: "subscribed", label: "Subscribed" },
+      { v: "non_subscribe", label: "Non-Subscribe" },
+      { v: "newbie", label: "Newbie" },
+    ],
+  },
+  {
+    key: "country", label: "Countries",
+    options: [
+      { v: "KR", label: "한국" },
+      { v: "JP", label: "일본" },
+    ],
+  },
+];
+
+function mountAdultplusFilters(asideEl, domain) {
+  if (!asideEl || asideEl.querySelector(".ap-filters")) return;
+  const wrap = document.createElement("div");
+  wrap.className = "ap-filters";
+  // default = 모두 체크 (사용자 직관: "전부 보고 있다")
+  wrap.innerHTML = `
+    <div class="ap-filter-head">
+      <h4>필터</h4>
+      <button class="ap-filter-reset" type="button" title="모두 선택">전체</button>
+    </div>
+    ${AP_FILTER_DEFS.map((f) => `
+      <div class="ap-filter-group" data-key="${escapeHtmlD(f.key)}">
+        <div class="ap-filter-label">${escapeHtmlD(f.label)}</div>
+        <ul class="ap-filter-list">
+          ${f.options.map((o) => `
+            <li>
+              <label>
+                <input type="checkbox" value="${escapeHtmlD(o.v)}" checked>
+                ${escapeHtmlD(o.label)}
+              </label>
+            </li>`).join("")}
+        </ul>
+      </div>
+    `).join("")}
+  `;
+  asideEl.appendChild(wrap);
+
+  // Filter changes → debounced refetch
+  const refetch = () => {
+    if (domain === "adult") {
+      const root = document.querySelector("#view-adult .kpi-view");
+      if (root) loadMarsAdultplus(root.querySelector(".kpi-start"),
+                                  root.querySelector(".kpi-end"));
+    } else if (domain === "mars") {
+      const root = document.querySelector("#view-mars .kpi-view");
+      if (root) loadMarsTabActive(root);
+    }
+  };
+  let timer = 0;
+  const debounced = () => { clearTimeout(timer); timer = setTimeout(refetch, 350); };
+  wrap.addEventListener("change", debounced);
+  // "전체" 버튼 — 모두 체크 (default 복원)
+  wrap.querySelector(".ap-filter-reset").addEventListener("click", () => {
+    wrap.querySelectorAll("input[type=checkbox]").forEach((c) => { c.checked = true; });
+    refetch();
+  });
+}
+
+function collectAdultplusFilters(domain) {
+  const view = document.getElementById("view-" + domain);
+  const wrap = view?.querySelector(".ap-filters");
+  if (!wrap) return {};
+  const out = {};
+  // 전체 선택 시 = 필터 없음 (URL param 생략 → BQ WHERE 안 붙음 → cache key 안정)
+  // 일부만 선택 시만 그 값들을 CSV 로 전달
+  wrap.querySelectorAll(".ap-filter-group").forEach((g) => {
+    const all = Array.from(g.querySelectorAll("input[type=checkbox]"));
+    const checked = all.filter((c) => c.checked).map((c) => c.value);
+    if (checked.length > 0 && checked.length < all.length) {
+      out[g.dataset.key] = checked.join(",");
+    }
+    // 0개 체크 또는 전체 체크 → 필터 미지정 (= 전체 데이터)
+  });
+  return out;
+}
+
+// ── Mars × SVOD/TVOD tabs — 두 탭 모두 AdultPlus 와 동일 양식 (PDF style) ──
+function mountMarsTabs(container) {
+  if (container.querySelector(".mars-tabs")) return;
+  const sec = document.createElement("section");
+  sec.className = "mars-tabs";
+  sec.innerHTML = `
+    <div class="mars-tab-switcher" role="tablist">
+      <button class="mars-tab active" data-tab="svod">📺 SVOD (구독제)</button>
+      <button class="mars-tab" data-tab="tvod">💳 TVOD (결제)</button>
+    </div>
+    <div class="mars-tab-panes">
+      <div class="mars-tab-pane" data-pane="svod"></div>
+      <div class="mars-tab-pane" data-pane="tvod" hidden></div>
+    </div>
+  `;
+  // .kpi-main 안에 mount — AI 인사이트와 동일 width
+  const target = container.querySelector(".kpi-main") || container;
+  target.appendChild(sec);
+
+  // 각 탭 pane 안에 AdultPlus 와 동일한 dashboard 마운트
+  mountMarsDashboardIn(sec.querySelector("[data-pane='svod']"), "svod");
+  mountMarsDashboardIn(sec.querySelector("[data-pane='tvod']"), "tvod");
+
+  // 탭 스위처
+  sec.querySelectorAll(".mars-tab").forEach((t) => {
+    t.addEventListener("click", () => {
+      sec.querySelectorAll(".mars-tab").forEach((x) => x.classList.remove("active"));
+      t.classList.add("active");
+      const which = t.dataset.tab;
+      sec.querySelectorAll(".mars-tab-pane").forEach((p) => {
+        p.hidden = p.dataset.pane !== which;
+      });
+      const root = container.querySelector(".kpi-view");
+      if (root) loadMarsTabActive(root);
+    });
+  });
+}
+
+function mountMarsDashboardIn(pane, kind) {
+  // AdultPlus 의 mountMarsAdultplus 와 동일한 dashboard 마크업을 그대로 재사용.
+  // 클래스명은 .mars-adultplus 그대로 (CSS 재사용). 단 data-kind 로 svod/tvod 구분.
+  if (pane.querySelector(".mars-adultplus")) return;
+  // tempContainer 트릭: mountMarsAdultplus 가 .kpi-main 또는 container 에 append
+  // 하므로, pane 을 직접 target 으로 쓰려면 임시 wrapper 가 필요. 그냥 인라인.
+  const sec = document.createElement("section");
+  sec.className = "mars-adultplus";
+  sec.dataset.kind = kind;
+  const kindLabel = kind === "svod" ? "SVOD (구독제)" : "TVOD (결제)";
+  const tableName = kind === "svod" ? "remy_mars_kpi_stats" : "remy_mars_kpi_tod_stats";
+  sec.innerHTML = `
+    <header class="ap-header">
+      <div>
+        <h2 class="ap-title">${kind === "svod" ? "📺" : "💳"} Mars ${escapeHtmlD(kindLabel)} funnel</h2>
+        <p class="ap-sub">mars 추천 슬롯 노출/클릭 funnel · BQ <code>${escapeHtmlD(tableName)}</code></p>
+      </div>
+      <span class="ap-status" aria-live="polite">대기 중</span>
+    </header>
+    <div class="ap-hero">
+      <div class="ap-stat" data-stat="rows_click_ratio">
+        <div class="ap-stat-label">Rows: click ratio</div><div class="ap-stat-value">—</div>
+      </div>
+      <div class="ap-stat" data-stat="cells_action_ratio">
+        <div class="ap-stat-label">Cells: action ratio</div><div class="ap-stat-value">—</div>
+      </div>
+      <div class="ap-stat" data-stat="unique_users">
+        <div class="ap-stat-label">Unique users</div><div class="ap-stat-value">—</div>
+      </div>
+      <div class="ap-stat" data-stat="total_recommends">
+        <div class="ap-stat-label">Total recommends</div><div class="ap-stat-value">—</div>
+      </div>
+      <div class="ap-stat" data-stat="elapsed_median_ms">
+        <div class="ap-stat-label">Elapsed: median (ms)</div><div class="ap-stat-value">—</div>
+      </div>
+    </div>
+    <div class="ap-grid-2">
+      <div class="ap-panel"><div class="ap-panel-head"><h3>Exposed · Actioned · ratio</h3><span class="ap-panel-sub">rs 기반</span></div><div class="ap-chart-wrap"><canvas class="ap-ts-actions"></canvas></div></div>
+      <div class="ap-panel"><div class="ap-panel-head"><h3>Exposed · Clicked · ratio</h3><span class="ap-panel-sub">rs 기반</span></div><div class="ap-chart-wrap"><canvas class="ap-ts-clicks"></canvas></div></div>
+      <div class="ap-panel"><div class="ap-panel-head"><h3>Clicked · Wished · Played · Purchased</h3><span class="ap-panel-sub">cs 기반 + ratios</span></div><div class="ap-chart-wrap"><canvas class="ap-ts-funnel"></canvas></div></div>
+      <div class="ap-panel"><div class="ap-panel-head"><h3>Users · Recommends</h3><span class="ap-panel-sub">일별</span></div><div class="ap-chart-wrap"><canvas class="ap-ts-users"></canvas></div></div>
+    </div>
+    <div class="ap-grid-3">
+      <div class="ap-panel"><div class="ap-panel-head"><h3>Rows: exposed</h3></div><div class="ap-chart-wrap ap-pie-wrap"><canvas class="ap-pie-exposed"></canvas></div></div>
+      <div class="ap-panel"><div class="ap-panel-head"><h3>Rows: clicked</h3></div><div class="ap-chart-wrap ap-pie-wrap"><canvas class="ap-pie-clicked"></canvas></div></div>
+      <div class="ap-panel"><div class="ap-panel-head"><h3>Actions</h3></div><div class="ap-chart-wrap ap-pie-wrap"><canvas class="ap-pie-actions"></canvas></div></div>
+    </div>
+    <div class="ap-panel ap-rows-table-panel">
+      <div class="ap-panel-head"><h3>Row × funnel</h3><span class="ap-panel-sub">rs.key 별 · 노출률 / 클릭률</span></div>
+      <div class="ap-rows-table-wrap">
+        <table class="ap-table ap-rows-table">
+          <thead><tr><th>#</th><th>Row</th><th class="num">Served</th><th class="num">Exposed</th><th class="num">Expose ratio</th><th class="num">Clicked</th><th class="num">Click ratio</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="ap-panel ap-table-panel">
+      <div class="ap-panel-head"><h3>Title × funnel</h3><span class="ap-panel-sub">cs 기반 · TOP 50 · 10행 후 스크롤</span></div>
+      <div style="overflow-x:auto;">
+        <table class="ap-table ap-title-table">
+          <thead><tr><th>#</th><th>Title</th><th class="num">Served</th><th class="num">Exposed</th><th class="num">Clicked</th><th class="num">CTR</th><th class="num">Played</th><th class="num">Wished</th><th class="num">Purchased</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  `;
+  pane.appendChild(sec);
+}
+
+async function loadMarsTabActive(root) {
+  const container = document.getElementById("view-mars");
+  const tabs = container.querySelector(".mars-tabs");
+  if (!tabs) return;
+  const activeBtn = tabs.querySelector(".mars-tab.active");
+  const kind = activeBtn?.dataset.tab || "svod";
+  const pane = tabs.querySelector(`[data-pane='${kind}']`);
+  const sec = pane?.querySelector(".mars-adultplus");
+  if (!sec) return;
+  const status = sec.querySelector(".ap-status");
+  const force = root.dataset.kpiForceRefresh === "1";
+  if (force) delete root.dataset.kpiForceRefresh;
+  status.textContent = force ? "강제 재조회 중… (BQ ~15s)" : "불러오는 중…";
+  status.dataset.kind = "loading";
+
+  const params = new URLSearchParams({
+    start: root.querySelector(".kpi-start").value,
+    end: root.querySelector(".kpi-end").value,
+    top_n: "50",
+  });
+  const filters = collectAdultplusFilters("mars");
+  for (const [k, v] of Object.entries(filters)) params.set(k, v);
+  if (force) params.set("force", "true");
+  const lsKey = `ap:mars-${kind}:${params.toString()}`;
+  if (!force) {
+    const cached = lsGet(lsKey);
+    if (cached) {
+      renderMarsAdultplus(sec, cached);
+      status.textContent = `${cached.period.start} ~ ${cached.period.end} (${cached.period.days}일) · 💾 local`;
+      status.dataset.kind = "ok";
+      return;
+    }
+  }
+  try {
+    const r = await fetch(`/api/kpi/mars/${kind}/summary?${params}`);
+    if (!r.ok) {
+      const t = await r.text();
+      status.textContent = `⚠️ 로드 실패 (${r.status})`;
+      status.dataset.kind = "error";
+      status.title = t.slice(0, 400);
+      return;
+    }
+    const data = await r.json();
+    renderMarsAdultplus(sec, data);
+    lsSet(lsKey, data);
+    const badge = data.from_cache ? " · ⚡ cache" : "";
+    status.textContent = `${data.period.start} ~ ${data.period.end} (${data.period.days}일)${badge}`;
+    status.dataset.kind = "ok";
+  } catch (exc) {
+    status.textContent = `⚠️ 네트워크 오류 — ${exc.message || exc}`;
+    status.dataset.kind = "error";
+  }
+}
+
+// ── Mars × AdultPlus sub-panel ──────────────────────────────────────────
+// mars 추천 슬롯 안의 AdultPlus funnel (BQ-only, archive 없음).
+// 독립 성인관 (adult 도메인) 과 다른 제품 — mars view 안에 격리된 sub-section.
+
+// galaxy = adult 와 동일 dashboard, 다른 endpoint
+function mountGalaxyFunnel(container) {
+  if (container.querySelector(".mars-adultplus")) return;
+  // mountMarsAdultplus 의 HTML 그대로 재사용 — 다만 header 텍스트만 galaxy 용으로
+  mountMarsAdultplus(container);
+  const sec = container.querySelector(".mars-adultplus");
+  const title = sec.querySelector(".ap-title");
+  const sub = sec.querySelector(".ap-sub");
+  if (title) title.textContent = "⭐ WatchaPedia (galaxy) funnel";
+  if (sub) sub.innerHTML = "사용자 RATE / WISH / SEARCH / CLICK · archive <code>/archive/rec_galaxy/behavior_logs/</code>";
+}
+
+async function loadGalaxyFunnel(startInp, endInp, opts = {}) {
+  const container = document.getElementById("view-galaxy");
+  const sec = container.querySelector(".mars-adultplus");
+  if (!sec) return;
+  const status = sec.querySelector(".ap-status");
+  status.textContent = opts.force ? "강제 재조회 중…" : "불러오는 중…";
+  status.dataset.kind = "loading";
+  const params = new URLSearchParams({
+    start: startInp.value, end: endInp.value, top_n: "50",
+  });
+  const filters = collectAdultplusFilters("galaxy");
+  for (const [k, v] of Object.entries(filters)) params.set(k, v);
+  if (opts.force) params.set("force", "true");
+  const lsKey = `ap:galaxy:${params.toString()}`;
+  if (!opts.force) {
+    const cached = lsGet(lsKey);
+    if (cached) {
+      renderMarsAdultplus(sec, cached);
+      status.textContent = `${cached.period.start} ~ ${cached.period.end} (${cached.period.days}일) · 💾 local`;
+      status.dataset.kind = "ok";
+      return;
+    }
+  }
+  try {
+    const r = await fetch(`/api/kpi/galaxy/funnel/summary?${params}`);
+    if (!r.ok) {
+      const detail = await r.text();
+      status.textContent = `⚠️ 로드 실패 (${r.status})`;
+      status.dataset.kind = "error";
+      status.title = detail.slice(0, 400);
+      return;
+    }
+    const data = await r.json();
+    renderMarsAdultplus(sec, data);
+    lsSet(lsKey, data);
+    const badge = data.from_cache ? " · ⚡ cache" : "";
+    status.textContent = `${data.period.start} ~ ${data.period.end} (${data.period.days}일)${badge}`;
+    status.dataset.kind = "ok";
+  } catch (exc) {
+    status.textContent = `⚠️ 네트워크 오류 — ${exc.message || exc}`;
+    status.dataset.kind = "error";
+  }
+}
+
+function mountMarsAdultplus(container) {
+  if (container.querySelector(".mars-adultplus")) return;
+  const sec = document.createElement("section");
+  sec.className = "mars-adultplus";
+  // .kpi-main 안에 append — AI 인사이트와 동일 width.
+  // (없으면 container 직속으로 fallback)
+  const target = container.querySelector(".kpi-main") || container;
+  sec.innerHTML = `
+    <header class="ap-header">
+      <div>
+        <h2 class="ap-title">🔞 AdultPlus funnel · mars 추천</h2>
+        <p class="ap-sub">mars 본 서비스 안의 성인+ 콘텐츠 노출 funnel · BQ <code>remy_mars_kpi_tod_adultplus_stats</code></p>
+      </div>
+      <span class="ap-status" aria-live="polite">불러오는 중…</span>
+    </header>
+
+    <div class="ap-hero">
+      <div class="ap-stat" data-stat="rows_click_ratio">
+        <div class="ap-stat-label">Rows: click ratio</div>
+        <div class="ap-stat-value">—</div>
+      </div>
+      <div class="ap-stat" data-stat="cells_action_ratio">
+        <div class="ap-stat-label">Cells: action ratio</div>
+        <div class="ap-stat-value">—</div>
+      </div>
+      <div class="ap-stat" data-stat="unique_users">
+        <div class="ap-stat-label">Unique users</div>
+        <div class="ap-stat-value">—</div>
+      </div>
+      <div class="ap-stat" data-stat="total_recommends">
+        <div class="ap-stat-label">Total recommends</div>
+        <div class="ap-stat-value">—</div>
+      </div>
+      <div class="ap-stat" data-stat="elapsed_median_ms">
+        <div class="ap-stat-label">Elapsed: median (ms)</div>
+        <div class="ap-stat-value">—</div>
+      </div>
+    </div>
+
+    <div class="ap-grid-2">
+      <div class="ap-panel">
+        <div class="ap-panel-head"><h3>Exposed · Actioned · ratio</h3><span class="ap-panel-sub">rs 기반</span></div>
+        <div class="ap-chart-wrap"><canvas class="ap-ts-actions"></canvas></div>
+      </div>
+      <div class="ap-panel">
+        <div class="ap-panel-head"><h3>Exposed · Clicked · ratio</h3><span class="ap-panel-sub">rs 기반</span></div>
+        <div class="ap-chart-wrap"><canvas class="ap-ts-clicks"></canvas></div>
+      </div>
+      <div class="ap-panel">
+        <div class="ap-panel-head"><h3>Clicked · Wished · Played · Purchased</h3><span class="ap-panel-sub">cs 기반 + ratios</span></div>
+        <div class="ap-chart-wrap"><canvas class="ap-ts-funnel"></canvas></div>
+      </div>
+      <div class="ap-panel">
+        <div class="ap-panel-head"><h3>Users · Recommends</h3><span class="ap-panel-sub">일별</span></div>
+        <div class="ap-chart-wrap"><canvas class="ap-ts-users"></canvas></div>
+      </div>
+    </div>
+
+    <div class="ap-grid-4">
+      <div class="ap-panel">
+        <div class="ap-panel-head"><h3>Rows: exposed</h3></div>
+        <div class="ap-chart-wrap ap-pie-wrap"><canvas class="ap-pie-exposed"></canvas></div>
+      </div>
+      <div class="ap-panel">
+        <div class="ap-panel-head"><h3>Rows: clicked</h3></div>
+        <div class="ap-chart-wrap ap-pie-wrap"><canvas class="ap-pie-clicked"></canvas></div>
+      </div>
+      <div class="ap-panel">
+        <div class="ap-panel-head"><h3>Actions</h3></div>
+        <div class="ap-chart-wrap ap-pie-wrap"><canvas class="ap-pie-actions"></canvas></div>
+      </div>
+      <div class="ap-panel">
+        <div class="ap-panel-head"><h3>Content types</h3><span class="ap-panel-sub">exposed 기준</span></div>
+        <div class="ap-chart-wrap ap-pie-wrap"><canvas class="ap-pie-ctypes"></canvas></div>
+      </div>
+    </div>
+
+    <div class="ap-panel ap-rows-table-panel">
+      <div class="ap-panel-head"><h3>Row × funnel</h3><span class="ap-panel-sub">rs.key 별 · 노출률 / 클릭률</span></div>
+      <div class="ap-rows-table-wrap">
+        <table class="ap-table ap-rows-table">
+          <thead><tr>
+            <th>#</th>
+            <th>Row</th>
+            <th class="num">Served</th>
+            <th class="num">Exposed</th>
+            <th class="num">Expose ratio</th>
+            <th class="num">Clicked</th>
+            <th class="num">Click ratio</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="ap-panel ap-table-panel">
+      <div class="ap-panel-head"><h3>Title × funnel</h3><span class="ap-panel-sub">cs 기반 · TOP 50 · 10행 후 스크롤 (Served/Exposed/Clicked/CTR/Played/Wished/Purchased)</span></div>
+      <div style="overflow-x:auto;">
+        <table class="ap-table ap-title-table">
+          <thead><tr>
+            <th>#</th><th>Title</th>
+            <th class="num">Served</th>
+            <th class="num">Exposed</th>
+            <th class="num">Clicked</th>
+            <th class="num">CTR</th>
+            <th class="num">Played</th>
+            <th class="num">Wished</th>
+            <th class="num">Purchased</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  `;
+  target.appendChild(sec);
+}
+
+// ── localStorage cache (브라우저 reload 도 ⚡, 10분 TTL) ─────────────────
+const LS_TTL_MS = 10 * 60 * 1000;
+function lsGet(key) {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return null;
+    const { ts, data } = JSON.parse(raw);
+    if (Date.now() - ts > LS_TTL_MS) { localStorage.removeItem(key); return null; }
+    return data;
+  } catch { return null; }
+}
+function lsSet(key, data) {
+  try { localStorage.setItem(key, JSON.stringify({ ts: Date.now(), data })); }
+  catch { /* quota — ignore */ }
+}
+
+async function loadMarsAdultplus(startInp, endInp, opts = {}) {
+  const container = document.getElementById("view-adult");
+  const sec = container.querySelector(".mars-adultplus");
+  if (!sec) return;
+  const status = sec.querySelector(".ap-status");
+  status.textContent = opts.force ? "강제 재조회 중… (BQ ~15s)" : "불러오는 중…";
+  status.dataset.kind = "loading";
+  const params = new URLSearchParams({
+    start: startInp.value, end: endInp.value, top_n: "50",
+  });
+  // 필터 (AdultPlus sidebar) — PDF 와 동일 4축
+  const filters = collectAdultplusFilters("adult");
+  for (const [k, v] of Object.entries(filters)) params.set(k, v);
+  if (opts.force) params.set("force", "true");
+  // localStorage cache check (force=false 시만)
+  const lsKey = `ap:adult:${params.toString()}`;
+  if (!opts.force) {
+    const cached = lsGet(lsKey);
+    if (cached) {
+      renderMarsAdultplus(sec, cached);
+      status.textContent = `${cached.period.start} ~ ${cached.period.end} (${cached.period.days}일) · 💾 local`;
+      status.dataset.kind = "ok";
+      return;
+    }
+  }
+  try {
+    const r = await fetch(`/api/kpi/mars/adultplus/summary?${params}`);
+    if (!r.ok) {
+      const detail = await r.text();
+      status.textContent = `⚠️ 로드 실패 (${r.status})`;
+      status.dataset.kind = "error";
+      status.title = detail.slice(0, 400);
+      return;
+    }
+    const data = await r.json();
+    renderMarsAdultplus(sec, data);
+    lsSet(lsKey, data);  // 다음 reload 까지 보관
+    const cacheBadge = data.from_cache ? " · ⚡ cache" : "";
+    status.textContent = `${data.period.start} ~ ${data.period.end} (${data.period.days}일)${cacheBadge}`;
+    status.dataset.kind = "ok";
+  } catch (exc) {
+    status.textContent = `⚠️ 네트워크 오류 — ${exc.message || exc}`;
+    status.dataset.kind = "error";
+  }
+}
+
+const AP_PALETTE = [
+  "#4dd3c1", "#5b8dee", "#ec5b8e", "#d97757", "#b8d8ff",
+  "#f3b095", "#9ba1b3", "#6b5a4a", "#a3e4d7", "#fad7a0",
+  "#7fb3d5", "#c39bd3", "#f1948a",
+];
+
+function renderMarsAdultplus(sec, data) {
+  const h = data.hero || {};
+  const ts = data.timeseries || [];
+  const pies = data.rows_pie || { exposed: [], clicked: [], actions: [] };
+  const titles = data.top_titles || [];
+
+  // ── Hero 5 stats ──
+  const statMap = {
+    rows_click_ratio: { fmt: "pct", val: h.rows_click_ratio },
+    cells_action_ratio: { fmt: "pct", val: h.cells_action_ratio },
+    unique_users: { fmt: "num", val: h.unique_users },
+    total_recommends: { fmt: "num", val: h.total_recommends },
+    elapsed_median_ms: { fmt: "num", val: h.elapsed_median_ms },
+  };
+  sec.querySelectorAll(".ap-stat").forEach((el) => {
+    const key = el.dataset.stat;
+    const s = statMap[key] || {};
+    const v = s.val;
+    el.querySelector(".ap-stat-value").textContent = (v == null) ? "—"
+      : (s.fmt === "pct") ? ((v * 100).toFixed(2) + "%")
+      : fmt.numFull(v);
+  });
+
+  // ── 4 timeseries combo charts ──
+  drawApTs(sec.querySelector(".ap-ts-actions"), ts, {
+    barDatasets: [{ key: "rs_exposed", label: "Exposed", color: "rgba(91,141,238,0.55)" },
+                  { key: "rs_action_cells", label: "Actioned (cells)", color: "rgba(217,119,87,0.75)" }],
+    lineDatasets: [{ key: "rs_action_ratio", label: "Ratio", color: "#ec5b8e", pct: true }],
+    chartKey: "apTsActions",
+  });
+  drawApTs(sec.querySelector(".ap-ts-clicks"), ts, {
+    barDatasets: [{ key: "rs_exposed", label: "Exposed", color: "rgba(91,141,238,0.55)" },
+                  { key: "rs_clicked", label: "Clicked", color: "rgba(217,119,87,0.75)" }],
+    lineDatasets: [{ key: "rs_click_ratio", label: "Click ratio", color: "#ec5b8e", pct: true }],
+    chartKey: "apTsClicks",
+  });
+  drawApTs(sec.querySelector(".ap-ts-funnel"), ts, {
+    barDatasets: [{ key: "clicked", label: "Clicked", color: "rgba(91,141,238,0.55)" },
+                  { key: "wished", label: "Wished", color: "rgba(243,176,149,0.7)" },
+                  { key: "played", label: "Played", color: "rgba(77,211,193,0.75)" },
+                  { key: "purchased", label: "Purchased", color: "rgba(236,91,142,0.85)" }],
+    lineDatasets: [{ key: "cs_play_ratio", label: "Play ratio", color: "#4dd3c1", pct: true },
+                   { key: "cs_purchase_ratio", label: "Purchase ratio", color: "#ec5b8e", pct: true },
+                   { key: "cs_wish_ratio", label: "Wish ratio", color: "#f3b095", pct: true }],
+    chartKey: "apTsFunnel",
+  });
+  drawApTs(sec.querySelector(".ap-ts-users"), ts, {
+    barDatasets: [{ key: "unique_users", label: "Users", color: "rgba(91,141,238,0.65)" }],
+    lineDatasets: [{ key: "total_recommends", label: "Recommends", color: "#d97757" }],
+    chartKey: "apTsUsers",
+  });
+
+  // ── 4 pies (rows × 3 + content types) ──
+  drawApPie(sec.querySelector(".ap-pie-exposed"), pies.exposed, "apPieExposed");
+  drawApPie(sec.querySelector(".ap-pie-clicked"), pies.clicked, "apPieClicked");
+  drawApPie(sec.querySelector(".ap-pie-actions"), pies.actions, "apPieActions");
+  drawApPie(sec.querySelector(".ap-pie-ctypes"), data.ctype_pie || [], "apPieCtypes");
+
+  // ── Row × funnel table (rs.key 별) ──
+  const rowsTbody = sec.querySelector(".ap-rows-table tbody");
+  const rows = data.rows_table || [];
+  rowsTbody.innerHTML = rows.length
+    ? rows.map((r, i) => `
+        <tr>
+          <td class="t-rank">${i + 1}</td>
+          <td class="t-title">${escapeHtmlD(r.key || "—")}</td>
+          <td class="num">${fmt.numFull(r.served)}</td>
+          <td class="num">${fmt.numFull(r.exposed)}</td>
+          <td class="num">${((r.expose_ratio || 0) * 100).toFixed(0)}%</td>
+          <td class="num">${fmt.numFull(r.clicked)}</td>
+          <td class="num">${((r.click_ratio || 0) * 100).toFixed(0)}%</td>
+        </tr>`).join("")
+    : `<tr><td colspan="7" style="color:var(--ink-faint); text-align:center; padding:14px">데이터 없음</td></tr>`;
+
+  // ── Title table ──
+  const tbody = sec.querySelector(".ap-title-table tbody");
+  const maxExp = titles.reduce((m, r) => Math.max(m, r.exposed), 0) || 1;
+  tbody.innerHTML = titles.length
+    ? titles.map((row, i) => {
+        const pct = (row.exposed / maxExp) * 100;
+        return `
+          <tr>
+            <td class="t-rank">${i + 1}</td>
+            <td class="t-title">${escapeHtmlD(row.title || row.content || "—")}</td>
+            <td class="num">${fmt.numFull(row.served)}</td>
+            <td class="num"><div class="ev-cell"><div class="ev-bar-wrap"><div class="ev-bar" style="width:${pct.toFixed(1)}%"></div></div><span class="ev-num">${fmt.numFull(row.exposed)}</span></div></td>
+            <td class="num">${fmt.numFull(row.clicked)}</td>
+            <td class="num">${((row.click_ratio || 0) * 100).toFixed(1)}%</td>
+            <td class="num">${fmt.numFull(row.played)}</td>
+            <td class="num">${fmt.numFull(row.wished)}</td>
+            <td class="num">${fmt.numFull(row.purchased)}</td>
+          </tr>`;
+      }).join("")
+    : `<tr><td colspan="9" style="color:var(--ink-faint); text-align:center; padding:14px">데이터 없음</td></tr>`;
+}
+
+function drawApTs(canvas, ts, spec) {
+  // Chart.getChart 로 canvas-기반 lookup → SVOD/TVOD/adult sec 간 충돌 방지
+  const existing = Chart.getChart(canvas);
+  if (existing) existing.destroy();
+  if (!ts.length) return;
+  const labels = ts.map((r) => r.date);
+  const datasets = [];
+  for (const b of (spec.barDatasets || [])) {
+    datasets.push({
+      type: "bar", label: b.label,
+      data: ts.map((r) => r[b.key] || 0),
+      backgroundColor: b.color, borderRadius: 4,
+      categoryPercentage: 0.78, barPercentage: 0.92,
+      stack: spec.barDatasets.length > 1 ? "vol" : undefined,
+      yAxisID: "y", order: 3,
+    });
+  }
+  for (const l of (spec.lineDatasets || [])) {
+    datasets.push({
+      type: "line", label: l.label,
+      data: ts.map((r) => l.pct ? (r[l.key] || 0) * 100 : (r[l.key] || 0)),
+      borderColor: l.color, backgroundColor: "transparent",
+      tension: 0.25, pointRadius: 3,
+      yAxisID: l.pct ? "y2" : "y",
+      order: 1,
+    });
+  }
+  new Chart(canvas, {
+    type: "bar",
+    data: { labels, datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { position: "bottom", labels: { boxWidth: 10, font: { size: 10 } } },
+        tooltip: { mode: "index", intersect: false },
+      },
+      scales: {
+        y:  { beginAtZero: true, position: "left",
+              grid: { color: themeColor("--grid", "rgba(255,255,255,0.04)") },
+              ticks: { font: { size: 10 } } },
+        y2: { beginAtZero: true, position: "right",
+              grid: { drawOnChartArea: false },
+              ticks: { font: { size: 10 }, callback: (v) => v + "%" } },
+        x:  { grid: { display: false }, ticks: { maxRotation: 0, autoSkip: true, font: { size: 10 } } },
+      },
+    },
+  });
+}
+
+function drawApPie(canvas, items, chartKey) {
+  const existing = Chart.getChart(canvas);
+  if (existing) existing.destroy();
+  if (!items || !items.length) return;
+  const labels = items.map((i) => i.key);
+  const values = items.map((i) => i.value);
+  const colors = labels.map((_, i) => AP_PALETTE[i % AP_PALETTE.length]);
+  new Chart(canvas, {
+    type: "doughnut",
+    data: { labels, datasets: [{ data: values, backgroundColor: colors,
+                                 borderColor: "transparent" }] },
+    options: {
+      responsive: true, maintainAspectRatio: false, cutout: "55%",
+      plugins: {
+        legend: { position: "right",
+                  labels: { boxWidth: 10, font: { size: 10 } } },
+        tooltip: { callbacks: {
+          label: (ctx) => {
+            const total = values.reduce((a, b) => a + b, 0) || 1;
+            const v = ctx.parsed;
+            return `${ctx.label}: ${fmt.numFull(v)} (${((v/total)*100).toFixed(1)}%)`;
+          },
+        } },
+      },
+    },
   });
 }
 
@@ -244,6 +963,22 @@ async function loadKpi(domain) {
   } finally {
     refresh.disabled = false;
     refresh.textContent = "새로고침";
+  }
+
+  // ── 도메인별 custom dashboard 로드 — try 밖에서 독립 실행. ──
+  // (위 summary fetch 에러나도 custom funnel 은 별도 endpoint 이므로 시도)
+  const force = root.dataset.kpiForceRefresh === "1";
+  if (force) delete root.dataset.kpiForceRefresh;
+  if (domain === "adult") {
+    loadMarsAdultplus(root.querySelector(".kpi-start"),
+                      root.querySelector(".kpi-end"),
+                      { force });
+  } else if (domain === "galaxy") {
+    loadGalaxyFunnel(root.querySelector(".kpi-start"),
+                     root.querySelector(".kpi-end"),
+                     { force });
+  } else if (domain === "mars") {
+    loadMarsTabActive(root);
   }
 }
 

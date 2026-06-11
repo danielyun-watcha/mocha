@@ -1840,6 +1840,528 @@ def _top_contents(df: pd.DataFrame, n: int = 10) -> list[dict]:
     ]
 
 
+# ── Mars rec KPI (AdultPlus subset) ─────────────────────────────
+# BQ-only (archive 에 없음). mars 본 서비스 안의 성인+ 추천 funnel.
+# 독립 성인관 (rec_adult) 와는 다른 제품 데이터 — adult 도메인과 합치지 말 것.
+
+# ── AdultPlus summary cache (in-memory LRU + TTL) ───────────────────────
+# BQ 4-query / call ~15-18s. 30분 TTL 면 데이터 일별 갱신 대비 충분 fresh.
+# force=True 로 우회 가능 (사용자 "새로고침" 버튼 등).
+import time as _ap_time  # noqa: E402 — late import to keep top imports tidy
+from collections import OrderedDict as _APOrdDict  # noqa: E402
+
+_AP_CACHE_TTL = int(os.environ.get("MOCHA_AP_CACHE_TTL_S", "86400"))  # 24h (daily 데이터 갱신)
+_AP_CACHE_MAX = int(os.environ.get("MOCHA_AP_CACHE_MAX", "50"))
+_AP_CACHE: "OrderedDict[tuple, tuple[float, dict]]" = _APOrdDict()
+
+
+def _ap_cache_key(start: date, end: date, top_n: int,
+                  filters: dict | None,
+                  table_kind: str = "tvod_adultplus") -> tuple:
+    # filters 안의 빈/None 제거 → "client=None" 과 "no client" 가 같은 키
+    norm = tuple(sorted((k, v) for k, v in (filters or {}).items() if v))
+    return (table_kind, start.isoformat(), end.isoformat(), top_n, norm)
+
+
+def _ap_cache_get(key: tuple) -> dict | None:
+    cached = _AP_CACHE.get(key)
+    if not cached:
+        return None
+    ts, data = cached
+    if _ap_time.time() - ts > _AP_CACHE_TTL:
+        del _AP_CACHE[key]
+        return None
+    _AP_CACHE.move_to_end(key)  # LRU touch
+    return data
+
+
+def _ap_cache_put(key: tuple, data: dict) -> None:
+    _AP_CACHE[key] = (_ap_time.time(), data)
+    _AP_CACHE.move_to_end(key)
+    while len(_AP_CACHE) > _AP_CACHE_MAX:
+        _AP_CACHE.popitem(last=False)
+
+
+def _empty_adultplus_summary(start: date, end: date) -> dict:
+    return {
+        "domain": "mars_adultplus",
+        "period": {"start": start.isoformat(), "end": end.isoformat(),
+                   "days": (end - start).days + 1},
+        "hero": {"total_recommends": 0, "unique_users": 0,
+                 "elapsed_median_ms": 0,
+                 "click_ratio": 0.0, "play_ratio": 0.0,
+                 "purchase_ratio": 0.0, "wish_ratio": 0.0,
+                 "rows_click_ratio": 0.0, "cells_action_ratio": 0.0},
+        "timeseries": [], "top_titles": [],
+        "rows_pie": {"exposed": [], "clicked": [], "actions": []},
+        "ctype_pie": [],
+        "rows_table": [],
+        "totals": {c: 0 for c in (
+            "served", "exposed", "clicked", "played",
+            "wished", "meh", "purchased",
+            "rs_served", "rs_exposed", "rs_clicked", "rs_action_cells",
+        )},
+        "from_cache": False,
+    }
+
+
+def mars_adultplus_summary(start: date, end: date, top_n: int = 100,
+                           filters: dict | None = None,
+                           force: bool = False,
+                           table_kind: str = "tvod_adultplus") -> dict:
+    """mars rec slot 의 AdultPlus 콘텐츠 funnel — PDF Datastudio 와 동일 구조.
+
+    BQ `remy_mars_kpi_tod_adultplus_stats` 에서 4 fetch:
+    1) cs[] unnest: content × date 카운트 → Title TOP + cs timeseries
+    2) rs[] unnest: row_key × date 카운트 → Rows pies + rs timeseries
+    3) users daily: 일별 unique_users + total_recommends
+    4) session meta: 전체 unique_users, total_recommends, elapsed median
+
+    Returns:
+        {
+          "domain", "period",
+          "hero": {  # PDF top strip
+            "total_recommends", "unique_users", "elapsed_median_ms",
+            "rows_click_ratio",    # PDF "Rows: click ratio 23%"
+            "cells_action_ratio",  # PDF "Cells: action ratio 7%"
+            "click_ratio", "play_ratio", "purchase_ratio", "wish_ratio"
+          },
+          "timeseries": [{
+            "date",
+            # cs (content-level)
+            "served", "exposed", "clicked", "played", "wished", "meh", "purchased",
+            # rs (row-level)
+            "rs_exposed", "rs_clicked", "rs_action_cells",
+            # session
+            "unique_users", "total_recommends",
+            # derived ratios
+            "rs_click_ratio", "cs_click_ratio",
+            "cs_wish_ratio", "cs_play_ratio", "cs_purchase_ratio",
+            "rs_action_ratio"
+          }],
+          "rows_pie": {
+            "exposed": [{"key", "value"}],   # rs.key 별 sum(exposed)
+            "clicked": [{"key", "value"}],   # rs.key 별 sum(click)
+            "actions": [{"key", "value"}]    # rs.key 별 sum(click_cell_indexes len)
+          },
+          "top_titles": [...],  # cs 기반 (Page 2 테이블)
+          "totals": {...}
+        }
+    """
+    _validate_window(start, end)
+
+    # ── Cache check (table_kind 별로 분리) ──────────────────────────────
+    ck = _ap_cache_key(start, end, top_n, filters, table_kind)
+    if not force:
+        cached = _ap_cache_get(ck)
+        if cached is not None:
+            return {**cached, "from_cache": True}
+
+    from data_sources.bq import (
+        fetch_mars_kpi_tod_adultplus,
+        fetch_mars_kpi_tod_adultplus_meta,
+        fetch_mars_kpi_tod_adultplus_rs,
+        fetch_mars_kpi_tod_adultplus_users_daily,
+    )
+
+    df_cs = fetch_mars_kpi_tod_adultplus(start, end, filters, table_kind)
+    df_rs = fetch_mars_kpi_tod_adultplus_rs(start, end, filters, table_kind)
+    df_users = fetch_mars_kpi_tod_adultplus_users_daily(start, end, filters, table_kind)
+    df_meta = fetch_mars_kpi_tod_adultplus_meta(start, end, filters, table_kind)
+
+    if df_cs.empty and df_rs.empty:
+        return _empty_adultplus_summary(start, end)
+
+    # ── cs (content-level) totals ────────────────────────────────────────
+    cs_cnt_cols = ["served", "exposed", "clicked", "played",
+                   "wished", "meh", "purchased"]
+    cs_totals = ({c: int(df_cs[c].fillna(0).sum()) for c in cs_cnt_cols}
+                 if not df_cs.empty else {c: 0 for c in cs_cnt_cols})
+
+    # ── rs (row/slot-level) totals ───────────────────────────────────────
+    rs_cnt_cols = ["rs_served", "rs_exposed", "rs_clicked", "rs_action_cells"]
+    rs_totals = ({c: int(df_rs[c].fillna(0).sum()) for c in rs_cnt_cols}
+                 if not df_rs.empty else {c: 0 for c in rs_cnt_cols})
+
+    totals = {**cs_totals, **rs_totals}
+
+    # ── Hero ─────────────────────────────────────────────────────────────
+    cs_exposed = cs_totals["exposed"] or 1
+    rs_exposed = rs_totals["rs_exposed"] or 1
+    hero_meta = df_meta.iloc[0].to_dict() if not df_meta.empty else {}
+    hero = {
+        "total_recommends": int(hero_meta.get("total_recommends") or 0),
+        "unique_users": int(hero_meta.get("unique_users") or 0),
+        "elapsed_median_ms": float(hero_meta.get("elapsed_median_ms") or 0),
+        # PDF: Rows click ratio (rs 기반)
+        "rows_click_ratio": round(rs_totals["rs_clicked"] / rs_exposed, 4),
+        # PDF: Cells action ratio (cs click vs cs exposed)
+        "cells_action_ratio": round(cs_totals["clicked"] / cs_exposed, 4),
+        "click_ratio": round(cs_totals["clicked"] / cs_exposed, 4),
+        "play_ratio": round(cs_totals["played"] / cs_exposed, 4),
+        "purchase_ratio": round(cs_totals["purchased"] / cs_exposed, 4),
+        "wish_ratio": round(cs_totals["wished"] / cs_exposed, 4),
+    }
+
+    # ── Timeseries (cs + rs + users 결합) ────────────────────────────────
+    # cs daily
+    cs_daily = (df_cs.groupby("remy_date")[cs_cnt_cols].sum().reset_index()
+                if not df_cs.empty else pd.DataFrame(columns=["remy_date", *cs_cnt_cols]))
+    # rs daily
+    rs_daily = (df_rs.groupby("remy_date")[rs_cnt_cols].sum().reset_index()
+                if not df_rs.empty else pd.DataFrame(columns=["remy_date", *rs_cnt_cols]))
+    # users daily
+    if not df_users.empty:
+        users_daily = df_users.copy()
+    else:
+        users_daily = pd.DataFrame(columns=["remy_date", "unique_users", "total_recommends"])
+
+    # outer merge by remy_date — fillna(0) 만 숫자 컬럼에 (date 컬럼은 db_dtypes 라 0 안 받음)
+    ts_df = cs_daily.merge(rs_daily, on="remy_date", how="outer") \
+                    .merge(users_daily, on="remy_date", how="outer") \
+                    .sort_values("remy_date")
+    _numeric_cols = [c for c in ts_df.columns if c != "remy_date"]
+    ts_df[_numeric_cols] = ts_df[_numeric_cols].fillna(0)
+
+    def _ratio(num: float, den: float) -> float:
+        return round(num / den, 4) if den else 0.0
+
+    timeseries = []
+    for _, row in ts_df.iterrows():
+        d = row["remy_date"]
+        rec = {
+            "date": d.isoformat() if hasattr(d, "isoformat") else str(d),
+        }
+        for c in cs_cnt_cols + rs_cnt_cols:
+            rec[c] = int(row.get(c) or 0)
+        rec["unique_users"] = int(row.get("unique_users") or 0)
+        rec["total_recommends"] = int(row.get("total_recommends") or 0)
+        # ratios (PDF 4 timeseries 의 line 부분)
+        rec["rs_click_ratio"] = _ratio(rec["rs_clicked"], rec["rs_exposed"])
+        rec["rs_action_ratio"] = _ratio(rec["rs_action_cells"], rec["rs_exposed"])
+        rec["cs_click_ratio"] = _ratio(rec["clicked"], rec["exposed"])
+        rec["cs_wish_ratio"] = _ratio(rec["wished"], rec["exposed"])
+        rec["cs_play_ratio"] = _ratio(rec["played"], rec["exposed"])
+        rec["cs_purchase_ratio"] = _ratio(rec["purchased"], rec["exposed"])
+        timeseries.append(rec)
+
+    # ── Rows pie (rs.key 기준) ──────────────────────────────────────────
+    rows_pie = {"exposed": [], "clicked": [], "actions": []}
+    rows_table = []
+    if not df_rs.empty:
+        by_key = (df_rs.groupby("key", dropna=False)[rs_cnt_cols]
+                       .sum().reset_index())
+        rows_pie["exposed"] = [
+            {"key": str(r["key"]), "value": int(r["rs_exposed"])}
+            for r in by_key.sort_values("rs_exposed", ascending=False)
+                            .to_dict("records")
+        ]
+        rows_pie["clicked"] = [
+            {"key": str(r["key"]), "value": int(r["rs_clicked"])}
+            for r in by_key.sort_values("rs_clicked", ascending=False)
+                            .to_dict("records")
+        ]
+        rows_pie["actions"] = [
+            {"key": str(r["key"]), "value": int(r["rs_action_cells"])}
+            for r in by_key.sort_values("rs_action_cells", ascending=False)
+                            .to_dict("records")
+        ]
+        # Row 테이블 (PDF 와 동일): key × served/exposed/clicked + ratios
+        rows_table = [
+            {
+                "key": str(r["key"]),
+                "served": int(r["rs_served"]),
+                "exposed": int(r["rs_exposed"]),
+                "expose_ratio": (round(r["rs_exposed"] / r["rs_served"], 4)
+                                 if r["rs_served"] else 0.0),
+                "clicked": int(r["rs_clicked"]),
+                "click_ratio": (round(r["rs_clicked"] / r["rs_exposed"], 4)
+                                if r["rs_exposed"] else 0.0),
+            }
+            for r in by_key.sort_values("rs_exposed", ascending=False)
+                            .to_dict("records")
+        ]
+
+    # ── Content type pie (cs.content prefix → type code → 이름) ────────
+    _CT_NAME = {
+        "1": "Movie", "2": "TvSeason", "4": "Book", "8": "Webtoon",
+        "16": "AdultMovie", "32": "AdultWebtoon",
+        "64": "ShortEpisode", "128": "TvEpisode", "256": "ShortSeason",
+    }
+    ctype_pie = []
+    if not df_cs.empty:
+        df_ct = df_cs.copy()
+        df_ct["ctype"] = df_ct["content"].astype(str).str.split(":").str[0]
+        by_ct = (df_ct.groupby("ctype", dropna=False)[cs_cnt_cols]
+                       .sum().reset_index()
+                       .sort_values("exposed", ascending=False))
+        ctype_pie = [
+            {"key": _CT_NAME.get(str(r["ctype"]), str(r["ctype"])),
+             "value": int(r["exposed"])}
+            for r in by_ct.to_dict("records")
+            if int(r["exposed"]) > 0
+        ]
+
+    # ── Title TOP N (cs 기준, PDF page 2 와 동일 컬럼) ─────────────────
+    top_titles = []
+    if not df_cs.empty:
+        by_title = (df_cs.groupby(["content", "title"], dropna=False)[cs_cnt_cols]
+                         .sum().reset_index()
+                         .sort_values("exposed", ascending=False)
+                         .head(top_n))
+        top_titles = [
+            {
+                "content": str(r["content"]) if pd.notna(r["content"]) else "",
+                "title": str(r["title"]) if pd.notna(r["title"]) else "",
+                **{c: int(r[c]) for c in cs_cnt_cols},
+                "click_ratio": (round(r["clicked"] / r["exposed"], 4)
+                                if r["exposed"] else 0.0),
+            }
+            for r in by_title.to_dict("records")
+        ]
+
+    result = {
+        "domain": f"mars_{table_kind}",
+        "table_kind": table_kind,
+        "period": {
+            "start": start.isoformat(), "end": end.isoformat(),
+            "days": (end - start).days + 1,
+        },
+        "hero": hero,
+        "timeseries": timeseries,
+        "rows_pie": rows_pie,
+        "ctype_pie": ctype_pie,
+        "rows_table": rows_table,
+        "top_titles": top_titles,
+        "totals": totals,
+        "from_cache": False,
+    }
+    _ap_cache_put(ck, result)
+    return result
+
+
+# ── Galaxy archive read helper ─────────────────────────────────────────
+def _read_galaxy_archive(start: date, end: date) -> pd.DataFrame:
+    """`<archive>/rec_galaxy/behavior_logs/` 에서 galaxy events 읽기.
+
+    Schema (실제 archive feather):
+      user_id (int), content_type (int8), content (category str),
+      action_type (category int — 1=RATE, 2=WISH, 6=SEARCH, 7=CLICK),
+      value (int), timestamp (Int64 unix sec)
+
+    이 함수 출력은 mocha 컨벤션으로 정규화:
+      user_id, content, content_type, created_at(=timestamp), action_type(=string)
+    KST window 로 필터.
+    """
+    specs = _domain_files("galaxy")
+    picked = _pick_files(specs, start, end)
+    if not picked:
+        return pd.DataFrame()
+    # KST window unix range
+    start_ts = int(datetime.combine(start, datetime.min.time(),
+                                    tzinfo=timezone(timedelta(hours=9))).timestamp())
+    end_ts = int(datetime.combine(end + timedelta(days=1), datetime.min.time(),
+                                  tzinfo=timezone(timedelta(hours=9))).timestamp())
+
+    dfs = []
+    _ACTION_NAMES = {1: "RATE", 2: "WISH", 6: "SEARCH", 7: "CLICK"}
+    for spec in picked:
+        df = _read_cached(spec.path, "galaxy")
+        # _read_cached 가 _preprocess 호출 → galaxy 의 경우 이미 action_type 가
+        # string categorical (RATE/WISH/SEARCH/CLICK) 로 변환됨. 단 timestamp 컬럼은
+        # 그대로 유지되어 있으므로 created_at 으로 alias.
+        if "timestamp" in df.columns and "created_at" not in df.columns:
+            df = df.rename(columns={"timestamp": "created_at"})
+        df = df[(df["created_at"] >= start_ts) & (df["created_at"] < end_ts)].copy()
+        # action_type 이 아직 int 인 경우 (preprocess 우회 환경) fallback 매핑
+        if not df.empty:
+            at = df["action_type"]
+            if pd.api.types.is_integer_dtype(at):
+                df["action_type"] = at.astype(int).map(_ACTION_NAMES).fillna("OTHER")
+            else:
+                # category 도 strings 으로 통일 (groupby/value_counts 호환)
+                df["action_type"] = df["action_type"].astype(str)
+        dfs.append(df)
+    return pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
+
+
+def galaxy_summary(start: date, end: date, top_n: int = 50,
+                   filters: dict | None = None, force: bool = False) -> dict:
+    """Galaxy (왓챠피디아) — archive 기반 PDF-style summary.
+
+    mars_adultplus_summary 와 동일한 schema (hero/timeseries/rows_pie/rows_table/
+    top_titles/ctype_pie) 를 archive 의 RATE/WISH/SEARCH/CLICK 이벤트로 채움.
+
+    Mapping (galaxy 의미가 mars/adult 의 rec funnel 과 다르지만 schema 통일 위해):
+      - served, exposed = 총 events (action 별 count)
+      - clicked         = CLICK action events
+      - wished          = WISH action events
+      - played          = 0 (galaxy 에 play 없음)
+      - purchased       = 0
+      - meh             = 0 (별도 mehs 파일이라 여기선 skip)
+      - rs.key          = action_type 이름 (RATE/WISH/SEARCH/CLICK)
+      - rows_click_ratio = CLICK / 총 events
+      - cells_action_ratio = (CLICK+RATE+WISH) / 총 events (engaged ratio)
+    """
+    _validate_window(start, end)
+
+    # Cache check
+    ck = _ap_cache_key(start, end, top_n, filters, "galaxy")
+    if not force:
+        cached = _ap_cache_get(ck)
+        if cached is not None:
+            return {**cached, "from_cache": True}
+
+    df = _read_galaxy_archive(start, end)
+    if df.empty:
+        result = _empty_adultplus_summary(start, end)
+        result["domain"] = "galaxy"
+        result["table_kind"] = "galaxy"
+        result["ctype_pie"] = []
+        result["from_cache"] = False
+        _ap_cache_put(ck, result)
+        return result
+
+    total = len(df)
+    click_n = int((df["action_type"] == "CLICK").sum())
+    wish_n = int((df["action_type"] == "WISH").sum())
+    rate_n = int((df["action_type"] == "RATE").sum())
+    search_n = int((df["action_type"] == "SEARCH").sum())
+    engaged = click_n + rate_n + wish_n  # SEARCH 제외
+
+    # Hero
+    hero = {
+        "total_recommends": total,
+        "unique_users": int(df["user_id"].nunique()),
+        "elapsed_median_ms": 0.0,  # archive 에 없음
+        "rows_click_ratio": round(click_n / total, 4) if total else 0.0,
+        "cells_action_ratio": round(engaged / total, 4) if total else 0.0,
+        "click_ratio": round(click_n / total, 4) if total else 0.0,
+        "play_ratio": 0.0,
+        "purchase_ratio": 0.0,
+        "wish_ratio": round(wish_n / total, 4) if total else 0.0,
+    }
+
+    # Daily timeseries — UTC unix → KST date
+    df = df.copy()
+    df["kst_date"] = pd.to_datetime(df["created_at"], unit="s", utc=True) \
+                        .dt.tz_convert("Asia/Seoul").dt.date
+
+    timeseries = []
+    for d, grp in df.groupby("kst_date", sort=True):
+        g_total = len(grp)
+        g_click = int((grp["action_type"] == "CLICK").sum())
+        g_wish = int((grp["action_type"] == "WISH").sum())
+        g_rate = int((grp["action_type"] == "RATE").sum())
+        g_engaged = g_click + g_rate + g_wish
+        timeseries.append({
+            "date": d.isoformat() if hasattr(d, "isoformat") else str(d),
+            # cs 매핑 — galaxy 의미로 적응
+            "served": g_total, "exposed": g_total,
+            "clicked": g_click, "played": 0,
+            "wished": g_wish, "meh": 0, "purchased": 0,
+            # rs 매핑
+            "rs_served": g_total, "rs_exposed": g_total,
+            "rs_clicked": g_click, "rs_action_cells": g_engaged,
+            # users
+            "unique_users": int(grp["user_id"].nunique()),
+            "total_recommends": g_total,
+            # ratios
+            "rs_click_ratio": round(g_click / g_total, 4) if g_total else 0.0,
+            "rs_action_ratio": round(g_engaged / g_total, 4) if g_total else 0.0,
+            "cs_click_ratio": round(g_click / g_total, 4) if g_total else 0.0,
+            "cs_wish_ratio": round(g_wish / g_total, 4) if g_total else 0.0,
+            "cs_play_ratio": 0.0, "cs_purchase_ratio": 0.0,
+        })
+
+    # rows_pie — action_type 별 분포
+    action_counts = df["action_type"].value_counts()
+    pie_items = [{"key": str(k), "value": int(v)} for k, v in action_counts.items()]
+    rows_pie = {"exposed": pie_items, "clicked": pie_items, "actions": pie_items}
+
+    # ctype_pie — content prefix 별
+    df["_ctype"] = df["content"].astype(str).str.split(":").str[0]
+    _CT_NAME = {
+        "1": "Movie", "2": "TvSeason", "4": "Book", "8": "Webtoon",
+        "16": "AdultMovie", "32": "AdultWebtoon",
+        "64": "ShortEpisode", "128": "TvEpisode", "256": "ShortSeason",
+    }
+    ctype_counts = df["_ctype"].value_counts()
+    ctype_pie = [
+        {"key": _CT_NAME.get(str(k), str(k)), "value": int(v)}
+        for k, v in ctype_counts.items() if int(v) > 0
+    ]
+
+    # rows_table — action_type 별 (galaxy 의미: 각 action 점유율)
+    rows_table = []
+    for k, v in action_counts.items():
+        n = int(v)
+        rows_table.append({
+            "key": str(k),
+            "served": n, "exposed": n,
+            "expose_ratio": round(n / total, 4) if total else 0.0,
+            "clicked": n if k == "CLICK" else 0,
+            "click_ratio": 1.0 if k == "CLICK" else 0.0,
+        })
+
+    # top_titles — content × total events (cs schema 유지)
+    title_map = _load_title_map() or {}
+    by_content = df.groupby("content").agg(
+        total_events=("user_id", "count"),
+        clicked=("action_type", lambda s: int((s == "CLICK").sum())),
+        wished=("action_type", lambda s: int((s == "WISH").sum())),
+    ).reset_index().sort_values("total_events", ascending=False).head(top_n)
+    top_titles = []
+    for r in by_content.to_dict("records"):
+        content_str = str(r["content"])
+        n = int(r["total_events"])
+        clk = int(r["clicked"])
+        top_titles.append({
+            "content": content_str,
+            "title": title_map.get(content_str, ""),
+            "served": n, "exposed": n,
+            "clicked": clk, "played": 0,
+            "wished": int(r["wished"]), "meh": 0, "purchased": 0,
+            "click_ratio": round(clk / n, 4) if n else 0.0,
+        })
+
+    totals = {
+        "served": total, "exposed": total, "clicked": click_n,
+        "played": 0, "wished": wish_n, "meh": 0, "purchased": 0,
+        "rs_served": total, "rs_exposed": total,
+        "rs_clicked": click_n, "rs_action_cells": engaged,
+    }
+
+    result = {
+        "domain": "galaxy",
+        "table_kind": "galaxy",
+        "period": {"start": start.isoformat(), "end": end.isoformat(),
+                   "days": (end - start).days + 1},
+        "hero": hero,
+        "timeseries": timeseries,
+        "rows_pie": rows_pie,
+        "ctype_pie": ctype_pie,
+        "rows_table": rows_table,
+        "top_titles": top_titles,
+        "totals": totals,
+        "from_cache": False,
+    }
+    _ap_cache_put(ck, result)
+    return result
+
+
+def mars_svod_summary(start: date, end: date, top_n: int = 100,
+                     filters: dict | None = None, force: bool = False) -> dict:
+    """Mars SVOD (구독제) — remy_mars_kpi_stats. purchase 없음."""
+    return mars_adultplus_summary(start, end, top_n, filters, force, "svod")
+
+
+def mars_tvod_summary(start: date, end: date, top_n: int = 100,
+                     filters: dict | None = None, force: bool = False) -> dict:
+    """Mars TVOD 전체 — remy_mars_kpi_tod_stats (AdultPlus 포함)."""
+    return mars_adultplus_summary(start, end, top_n, filters, force, "tvod_all")
+
+
 # ── public API ──────────────────────────────────────────────────
 
 def domain_meta() -> list[dict]:

@@ -1439,3 +1439,204 @@ canvas.chart-ts, canvas.chart-actions {
   font-size: 10.5px; text-transform: uppercase; opacity: 0.7;
   border: 1px solid currentColor; border-radius: 4px; padding: 0 4px; margin: 0 2px;
 }
+
+/* ── AdultPlus filters sidebar ──────────────────────────────────────── */
+.ap-filters {
+  padding: 14px;
+  border-radius: 10px;
+  background: var(--bg-3, rgba(255,255,255,0.04));
+  border: 1px solid var(--border, rgba(255,255,255,0.06));
+}
+.ap-filter-head {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 10px;
+}
+.ap-filter-head h4 { margin: 0; font-size: 13px; font-weight: 600; }
+.ap-filter-reset {
+  background: transparent; border: 1px solid var(--border, rgba(255,255,255,0.12));
+  color: var(--ink-soft); cursor: pointer;
+  width: 26px; height: 26px; border-radius: 6px;
+  font-size: 14px; padding: 0; line-height: 1;
+}
+.ap-filter-reset:hover { background: rgba(255,255,255,0.06); }
+.ap-filter-group { margin-bottom: 14px; }
+.ap-filter-group:last-child { margin-bottom: 0; }
+.ap-filter-label {
+  font-size: 11px; color: var(--ink-faint);
+  text-transform: uppercase; letter-spacing: 0.5px;
+  margin-bottom: 6px;
+}
+.ap-filter-list {
+  list-style: none; padding: 0; margin: 0;
+  display: flex; flex-direction: column; gap: 4px;
+}
+.ap-filter-list label {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 12.5px; cursor: pointer;
+  padding: 4px 6px; border-radius: 6px;
+}
+.ap-filter-list label:hover { background: rgba(255,255,255,0.04); }
+.ap-filter-list input[type=checkbox] { accent-color: var(--accent, #5b8dee); }
+
+/* ── Mars SVOD/TVOD tab switcher ────────────────────────────────────── */
+.mars-tabs {
+  margin: 24px 0 0;
+  padding: 0 0 16px;
+  border-bottom: 1px solid var(--border, rgba(255,255,255,0.08));
+}
+.mars-tab-switcher {
+  display: flex; gap: 6px;
+  margin-bottom: 18px;
+  border-bottom: 1px solid var(--border, rgba(255,255,255,0.08));
+}
+.mars-tab {
+  background: transparent; border: none;
+  color: var(--ink-soft); padding: 10px 18px;
+  font-size: 13.5px; cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: border-color 120ms, color 120ms;
+}
+.mars-tab:hover { color: var(--ink); }
+.mars-tab.active {
+  color: var(--accent, #5b8dee);
+  border-bottom-color: var(--accent, #5b8dee);
+  font-weight: 600;
+}
+.mars-tab-pane { min-height: 200px; }
+
+/* ── Mars × AdultPlus full dashboard (PDF Datastudio replica) ───────── */
+.mars-adultplus {
+  /* AI 인사이트 panel 바로 아래 — top margin 제거. */
+  margin: 0 0 24px;
+  padding: 18px;
+  border: 1px solid var(--border, rgba(255,255,255,0.08));
+  border-radius: 14px;
+  background: var(--bg-2, rgba(255,255,255,0.02));
+}
+/* AI 인사이트 panel 의 bottom margin 도 압축 */
+.custom-dashboard-only .kpi-panel-insight { margin-bottom: 14px; }
+
+/* mars/adult 도메인 — 기존 표준 패널 강제 숨김 (renderKpi 의 setHidden 우회) */
+.custom-dashboard-only .kpi-basis-note,
+.custom-dashboard-only .kpi-cards-hero,
+.custom-dashboard-only .kpi-panel-chart,
+.custom-dashboard-only .kpi-row,
+.custom-dashboard-only .kpi-panel-revenue,
+.custom-dashboard-only .kpi-row-4col,
+.custom-dashboard-only .kpi-panel-donut,
+.custom-dashboard-only .kpi-foot,
+.custom-dashboard-only .kpi-aside > .aside-panel { display: none !important; }
+.mars-adultplus .ap-header {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 16px; margin-bottom: 18px;
+}
+.mars-adultplus .ap-title { margin: 0 0 4px; font-size: 18px; font-weight: 600; }
+.mars-adultplus .ap-sub {
+  margin: 0; font-size: 12px; color: var(--ink-faint, rgba(255,255,255,0.45));
+}
+.mars-adultplus .ap-sub code {
+  font-size: 11px; opacity: 0.8;
+  background: rgba(255,255,255,0.06); padding: 1px 5px; border-radius: 4px;
+}
+.mars-adultplus .ap-status {
+  font-size: 12px; color: var(--ink-faint); font-family: ui-monospace, monospace;
+  white-space: nowrap;
+}
+.mars-adultplus .ap-status[data-kind="error"] { color: var(--danger, #ec5b8e); }
+.mars-adultplus .ap-status[data-kind="loading"] { color: var(--accent, #5b8dee); }
+
+/* Hero strip */
+.mars-adultplus .ap-hero {
+  display: grid; grid-template-columns: repeat(5, 1fr);
+  gap: 10px; margin-bottom: 18px;
+}
+.mars-adultplus .ap-stat {
+  padding: 14px 16px; border-radius: 10px;
+  background: var(--bg-3, rgba(255,255,255,0.04));
+  border: 1px solid var(--border, rgba(255,255,255,0.06));
+}
+.mars-adultplus .ap-stat-label {
+  font-size: 11px; color: var(--ink-faint); letter-spacing: 0.3px;
+  text-transform: uppercase; margin-bottom: 6px;
+}
+.mars-adultplus .ap-stat-value {
+  font-size: 24px; font-weight: 600; font-variant-numeric: tabular-nums;
+}
+
+/* 2×2 timeseries grid */
+.mars-adultplus .ap-grid-2 {
+  display: grid; grid-template-columns: 1fr 1fr;
+  gap: 14px; margin-bottom: 14px;
+}
+/* 1×3 pies row (legacy) */
+.mars-adultplus .ap-grid-3 {
+  display: grid; grid-template-columns: 1fr 1fr 1fr;
+  gap: 14px; margin-bottom: 14px;
+}
+/* 1×4 pies row (rows × 3 + content types) */
+.mars-adultplus .ap-grid-4 {
+  display: grid; grid-template-columns: 1fr 1fr 1fr 1fr;
+  gap: 14px; margin-bottom: 14px;
+}
+@media (max-width: 1400px) {
+  .mars-adultplus .ap-grid-4 { grid-template-columns: 1fr 1fr; }
+}
+@media (max-width: 1100px) {
+  .mars-adultplus .ap-hero  { grid-template-columns: repeat(2, 1fr); }
+  .mars-adultplus .ap-grid-2 { grid-template-columns: 1fr; }
+  .mars-adultplus .ap-grid-3 { grid-template-columns: 1fr; }
+  .mars-adultplus .ap-grid-4 { grid-template-columns: 1fr; }
+}
+
+.mars-adultplus .ap-panel {
+  padding: 14px; border-radius: 10px;
+  background: var(--bg-3, rgba(255,255,255,0.04));
+  border: 1px solid var(--border, rgba(255,255,255,0.06));
+}
+.mars-adultplus .ap-panel-head {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: 8px; margin-bottom: 8px;
+}
+.mars-adultplus .ap-panel-head h3 {
+  margin: 0; font-size: 13px; font-weight: 500;
+}
+.mars-adultplus .ap-panel-sub {
+  font-size: 10.5px; color: var(--ink-faint);
+}
+.mars-adultplus .ap-chart-wrap { position: relative; height: 240px; }
+.mars-adultplus .ap-pie-wrap { height: 220px; }
+
+/* Title table — 10행 보이고 나머지는 스크롤. row 높이 ~32px × 10 + thead ~32px ≈ 360px */
+.mars-adultplus .ap-table-panel { padding: 14px; }
+/* 스크롤 wrapper — panel-head 와 분리 */
+.mars-adultplus .ap-table-panel > div:not(.ap-panel-head),
+.mars-adultplus .ap-rows-table-wrap {
+  max-height: 360px;
+  overflow-y: auto;
+  margin-top: 10px;
+  border: 1px solid var(--border, rgba(255,255,255,0.1));
+  border-radius: 6px;
+  background: var(--panel, #161a23);
+}
+/* border-collapse: separate — sticky thead 가 collapse 테이블에서 깨지는 Chrome/Safari 이슈 우회 */
+.mars-adultplus .ap-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 12.5px;
+}
+.mars-adultplus .ap-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border, rgba(255,255,255,0.05));
+}
+/* thead — sticky 제거, 단순 column header. 스크롤 시 header 가 함께 스크롤됨
+   (사용자는 본문 ↔ header 겹침 없는 게 우선 — Chrome 의 sticky+table 이슈 회피) */
+.mars-adultplus .ap-table thead th {
+  text-align: left; color: var(--ink-soft); font-weight: 500;
+  padding: 10px;
+  background: var(--panel, #161a23);
+  border-bottom: 2px solid var(--border, rgba(255,255,255,0.18));
+}
+.mars-adultplus .ap-table th.num, .mars-adultplus .ap-table td.num { text-align: right; }
+.mars-adultplus .ap-table .t-rank { color: var(--ink-faint); width: 28px; }
+.mars-adultplus .ap-table .t-title { font-weight: 500; max-width: 360px; }
